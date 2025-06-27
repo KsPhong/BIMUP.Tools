@@ -62,11 +62,18 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Command.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Orther.cs" />
   </ItemGroup>
   <ItemGroup>
     <Folder Include="Library\" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\BIMUP.API\BIMUP.API.csproj">
+      <Project>{ef8ace80-e0af-4285-9fc2-22a9b4ab47a8}</Project>
+      <Name>BIMUP.API</Name>
+    </ProjectReference>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>
