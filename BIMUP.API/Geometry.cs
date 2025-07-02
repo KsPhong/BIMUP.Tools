@@ -4,7 +4,6 @@ using System.Linq;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.Geometry;
 
-
 public static class Constants
 {
     /// <summary>
@@ -46,6 +45,61 @@ public class GeoPlane
         _normal = normal;
     }
 
+    #endregion
+
+    #region Method
+    public Entity[] Test()
+    {
+        // Gốc và vector cơ sở
+        var origin = _origin;
+        var normal = _normal.GetNormal();
+
+        // Tạo hệ trục XY nằm trên mặt phẳng
+        Vector3d xAxis = _xAxis.Length > 0 ? _xAxis.GetNormal() :
+                         (Math.Abs(normal.DotProduct(Vector3d.XAxis)) > 0.9 ? Vector3d.YAxis : Vector3d.XAxis).CrossProduct(normal).GetNormal();
+
+        Vector3d yAxis = normal.CrossProduct(xAxis).GetNormal();
+
+        // Tạo 4 điểm vuông góc theo hệ trục mặt phẳng
+        double size = 2.5; // nửa cạnh hình vuông (tổng 5x5)
+        Point3d p1 = origin + xAxis * -size + yAxis * -size;
+        Point3d p2 = origin + xAxis * size + yAxis * -size;
+        Point3d p3 = origin + xAxis * size + yAxis * size;
+        Point3d p4 = origin + xAxis * -size + yAxis * size;
+
+        // Tạo Polyline kín
+        var pl = new Polyline(4);
+        pl.AddVertexAt(0, new Point2d(0, 0), 0, 0, 0);
+        pl.AddVertexAt(1, new Point2d(5, 0), 0, 0, 0);
+        pl.AddVertexAt(2, new Point2d(5, 5), 0, 0, 0);
+        pl.AddVertexAt(3, new Point2d(0, 5), 0, 0, 0);
+        pl.Closed = true;
+
+        // Di chuyển Polyline từ (0,0,0) sang tọa độ p1 và xoay theo hệ trục mặt phẳng
+        var mat = Matrix3d.AlignCoordinateSystem(
+            Point3d.Origin, Vector3d.XAxis, Vector3d.YAxis, Vector3d.ZAxis,
+            p1, xAxis, yAxis, normal
+        );
+
+        var plTransformed = (Entity)pl.Clone();
+        plTransformed.TransformBy(mat);
+
+        // Tạo Region từ Polyline
+        DBObjectCollection curves = new DBObjectCollection();
+        curves.Add(plTransformed);
+        var regions = Region.CreateFromCurves(curves);
+
+        // Tạo đường vector pháp tuyến màu đỏ
+        var line = new Line(origin, origin + normal * 5);
+        line.ColorIndex = 1; // Red
+
+        // Trả về Region + Line
+        var entities = new List<Entity>();
+        entities.AddRange(regions.Cast<Entity>());
+        entities.Add(line);
+
+        return entities.ToArray();
+    }
     #endregion
 }
 
@@ -124,6 +178,52 @@ public class GeoCoordinateSystem
     public static GeoCoordinateSystem WCS => new GeoCoordinateSystem();
 
     #endregion
+
+    #region Method
+
+    /// <summary>
+    /// Rotates the coordinate system around an arbitrary axis by a given angle in degrees.
+    /// </summary>
+    /// <param name="axis">
+    /// The rotation axis as a 3D vector. It does not need to be normalized.
+    /// </param>
+    /// <param name="angleDegrees">
+    /// The rotation angle in degrees. Positive values rotate counterclockwise 
+    /// according to the right-hand rule with respect to the axis direction.
+    /// </param>
+    /// <returns>
+    /// A new <see cref="GeoCoordinateSystem"/> instance with X, Y, and Z axes rotated 
+    /// around the specified axis by the given angle. The origin remains unchanged.
+    /// </returns>
+    /// <exception cref="ArgumentException">
+    /// Thrown when the input axis has zero length.
+    /// </exception>
+    public GeoCoordinateSystem Rotate(Vector3d axis, double angleDegrees)
+    {
+        if (axis.Length < Constants.DefaultTolerance)
+            throw new ArgumentException("Rotation axis must be non-zero.");
+
+        double angleRadians = angleDegrees * (Math.PI / 180.0);
+        Vector3d axisNorm = axis.GetNormal();
+
+        Vector3d newX = XAxis.TransformBy(Matrix3d.Rotation(angleRadians, axisNorm, Point3d.Origin));
+        Vector3d newY = YAxis.TransformBy(Matrix3d.Rotation(angleRadians, axisNorm, Point3d.Origin));
+        Vector3d newZ = ZAxis.TransformBy(Matrix3d.Rotation(angleRadians, axisNorm, Point3d.Origin));
+
+        return new GeoCoordinateSystem(Origin, newX, newY, newZ);
+    }
+
+    public Entity[] Test()
+    {
+        double length = 5.0;
+
+        var xLine = new Line(_origin, _origin + _xAxis * length) { ColorIndex = 1 }; // Đỏ
+        var yLine = new Line(_origin, _origin + _yAxis * length) { ColorIndex = 3 }; // Xanh lá
+        var zLine = new Line(_origin, _origin + _zAxis * length) { ColorIndex = 5 }; // Xanh than
+
+        return new Entity[] { xLine, yLine, zLine };
+    }
+    #endregion
 }
 
 public abstract class GeoCurves
@@ -138,6 +238,13 @@ public abstract class GeoCurves
     #endregion
 
     #region Abstract Methods
+    /// <summary>
+    /// Tính tham số t (0 ≤ t ≤ 1) của một điểm bất kỳ so với GeoLine,
+    /// nhưng chỉ xét trên mặt phẳng OXY (Z = 0), sau đó có thể dùng t để tìm vị trí 3D.
+    /// </summary>
+    /// <param name="point">Điểm cần tính t (có thể nằm ngoài đường)</param>
+    /// <returns>Giá trị t đã clamp từ 0 đến 1</returns>
+    public abstract double ParameterAtPoint2D(Point3d point);
 
     /// <summary>
     /// Returns the local coordinate system at a parameter t (from 0 to 1).
@@ -179,7 +286,7 @@ public abstract class GeoCurves
     /// <summary>
     /// Reverses the direction of the curve (start becomes end and vice versa).
     /// </summary>
-    public abstract GeoCurves Reverse();
+    public abstract void Reverse();
 
     /// <summary>
     /// Splits the curve at specified parameters (0 ≤ t ≤ 1).
@@ -200,6 +307,10 @@ public abstract class GeoCurves
     /// Calculates the intersection between this curve and another GeoCurves object.
     /// </summary>
     public abstract IntersectionResult IntersectWith(GeoCurves other);
+
+    public abstract GeoCoordinateSystem CoordinateSystemAtParameterFixZ(double t);
+
+    public abstract Entity[] Test();
 
     #endregion
 }
@@ -271,17 +382,83 @@ public sealed class GeoLine: GeoCurves
     }
 
     /// <summary>
-    /// Returns the local coordinate system at parameter t along the line.
-    /// Z-axis is aligned with the line's direction.
+    /// Tính tham số t (0 ≤ t ≤ 1) của một điểm bất kỳ so với GeoLine,
+    /// nhưng chỉ xét trên mặt phẳng OXY (Z = 0), sau đó có thể dùng t để tìm vị trí 3D.
+    /// </summary>
+    /// <param name="point">Điểm cần tính t (có thể nằm ngoài đường)</param>
+    /// <returns>Giá trị t đã clamp từ 0 đến 1</returns>
+    public override double ParameterAtPoint2D(Point3d point)
+    {
+        // 1. Chiếu điểm đầu và cuối của GeoLine xuống mặt phẳng OXY (Z = 0)
+        Point3d p0 = new Point3d(StartPoint.X, StartPoint.Y, 0);
+        Point3d p1 = new Point3d(EndPoint.X, EndPoint.Y, 0);
+
+        // 2. Chiếu điểm cần kiểm tra xuống OXY
+        Point3d pTest = new Point3d(point.X, point.Y, 0);
+
+        // 3. Tính vector của đoạn thẳng (chiếu xuống OXY) và vector từ p0 đến điểm cần kiểm tra
+        Vector3d lineVec = p1 - p0;
+        Vector3d toPoint = pTest - p0;
+
+        // 4. Tính t theo công thức nội suy: (toPoint ⋅ lineVec) / |lineVec|²
+        double t = toPoint.DotProduct(lineVec) / lineVec.LengthSqrd;
+
+        // 5. Giới hạn t trong khoảng [0, 1] để tránh vượt khỏi đoạn gốc
+        if (t < 0) t = 0;
+        if (t > 1) t = 1;
+
+        return t;
+    }
+
+    /// <summary>
+    /// Returns the local coordinate system at parameter t along the line,
+    /// where:
+    /// - Y-axis is the line's direction (forward),
+    /// - Z-axis is global Z if not parallel to Y, otherwise uses fallback,
+    /// - X-axis is computed as Y × Z (to the right),
+    /// and Z is re-adjusted as X × Y to ensure orthonormal system.
     /// </summary>
     public override GeoCoordinateSystem CoordinateSystemAtParameter(double t)
     {
         var origin = PointAtParameter(t);
-        var z = Direction;
+        Vector3d y = Direction.GetNormal();
 
-        Vector3d x = Math.Abs(z.DotProduct(Vector3d.XAxis)) > 0.9 ? Vector3d.YAxis : Vector3d.XAxis;
-        Vector3d y = z.CrossProduct(x).GetNormal();
-        x = y.CrossProduct(z).GetNormal();
+        // Choose Z: global Z if not nearly parallel to Y, fallback if too close
+        Vector3d z = y.CrossProduct(Vector3d.ZAxis).Length > Constants.DefaultTolerance
+            ? Vector3d.ZAxis
+            : Vector3d.YAxis;
+
+        // Compute X to the right of Y
+        Vector3d x = y.CrossProduct(z).GetNormal();
+
+        // Recompute Z to enforce strict orthonormal right-handed system
+        z = x.CrossProduct(y).GetNormal();
+
+        return new GeoCoordinateSystem(origin, x, y, z);
+    }
+
+    /// <summary>
+    /// Returns a local coordinate system at parameter t along the line,
+    /// with Z-axis fixed as vertical (global Z). 
+    /// - Y-axis follows the line's direction,
+    /// - X-axis is Y × Z (to the right),
+    /// and Z is recomputed from X × Y to enforce orthonormality.
+    /// </summary>
+    public override GeoCoordinateSystem CoordinateSystemAtParameterFixZ(double t)
+    {
+        var origin = PointAtParameter(t);
+        Vector3d y = Direction.GetNormal();
+        Vector3d z = Vector3d.ZAxis;
+
+        Vector3d x = y.CrossProduct(z).GetNormal();
+
+        // Handle degenerate case where Y is parallel to Z (vertical line)
+        if (x.Length < Constants.DefaultTolerance)
+            x = Vector3d.XAxis;
+
+        // Recompute Z to enforce right-handed coordinate system
+        z = x.CrossProduct(y).GetNormal();
+
         return new GeoCoordinateSystem(origin, x, y, z);
     }
 
@@ -316,7 +493,7 @@ public sealed class GeoLine: GeoCurves
     {
         var origin = PointAtParameter(t);
         var normal = NormalAtParameter(t);
-        return new GeoPlane(origin, normal);
+        return new GeoPlane(origin, Direction);
     }
 
     /// <summary>
@@ -339,9 +516,13 @@ public sealed class GeoLine: GeoCurves
     /// <summary>
     /// Reverses the direction of the line (start ↔ end).
     /// </summary>
-    public override GeoCurves Reverse()
+    public override void Reverse()
     {
-        return new GeoLine(EndPoint, StartPoint);
+        var temp = _startPoint;
+        _startPoint = _endPoint;
+        _endPoint = temp;
+
+        _direction = (_endPoint - _startPoint).GetNormal();
     }
 
     /// <summary>
@@ -435,6 +616,15 @@ public sealed class GeoLine: GeoCurves
             return IntersectWithPolycurve(poly);
         else
             throw new NotSupportedException($"GeoLine does not support intersection with {other.GetType().Name}");
+    }
+
+    public override Entity[] Test()
+    {
+        var line = new Line(StartPoint, EndPoint)
+        {
+            ColorIndex = 4 // Màu xanh dương nhạt
+        };
+        return new Entity[] { line };
     }
     #endregion
 
@@ -597,6 +787,7 @@ public sealed class GeoLine: GeoCurves
     }
 
     #endregion
+
 }
 
 public sealed class GeoArc : GeoCurves
@@ -648,65 +839,121 @@ public sealed class GeoArc : GeoCurves
     /// <param name="midPoint">Any point lying on the arc between start and end.</param>
     /// <param name="endPoint">End point of the arc.</param>
     /// <exception cref="ArgumentException">Thrown if the three points are colinear or invalid.</exception>
-    public GeoArc(Point3d startPoint, Point3d midPoint, Point3d endPoint)
+    public GeoArc(Point3d A, Point3d B, Point3d C)
     {
-        m_startpoint = startPoint;
-        m_midPoint = midPoint;
-        m_endpoint = endPoint;
-
-        // Step 1: Calculate normal of the arc's plane
-        Vector3d v1 = midPoint - startPoint;
-        Vector3d v2 = endPoint - midPoint;
-        m_normal = v1.CrossProduct(v2).GetNormal();
-
-        if (m_normal.Length < Constants.DefaultTolerance)
-            throw new ArgumentException("The three points are colinear — arc cannot be created.");
-
-        // Step 2: Define the plane of the arc
-        m_plane = new GeoPlane(startPoint, m_normal);
-
-        // Step 3: Find perpendicular bisectors of two segments
-        Point3d mid1 = startPoint + 0.5 * v1;
-        Point3d mid2 = midPoint + 0.5 * v2;
-
-        Vector3d perp1 = v1.CrossProduct(m_normal).GetNormal();
-        Vector3d perp2 = v2.CrossProduct(m_normal).GetNormal();
-
-        // Step 4: Solve intersection of the two bisectors to get center
-        Vector3d d1 = perp1;
-        Vector3d d2 = perp2;
-        Vector3d r = mid1 - mid2;
-
-        double a = d1.DotProduct(d1);
-        double b = d1.DotProduct(d2);
-        double c = d2.DotProduct(d2);
-        double d = d1.DotProduct(r);
-        double e = d2.DotProduct(r);
-        double denom = a * c - b * b;
-
-        if (Math.Abs(denom) < Constants.DefaultTolerance)
-            throw new ArgumentException("Failed to compute arc center — perpendicular bisectors do not intersect.");
-
-        double s = (b * e - c * d) / denom;
-        m_centerPoint = mid1 + s * d1;
-
-        // Step 5: Compute radius
-        m_radius = m_centerPoint.DistanceTo(startPoint);
-
-        // Step 6: Compute sweep angle
-        Vector3d from = (startPoint - m_centerPoint).GetNormal();
-        Vector3d to = (endPoint - m_centerPoint).GetNormal();
-
-        double angle = from.GetAngleTo(to);
-        if (from.CrossProduct(to).DotProduct(m_normal) < 0)
-            angle = 2 * Math.PI - angle;
-
-        m_angle = angle;
-        m_length = m_radius * angle;
-
-        m_startAngle = 0;
-        m_endAngle = m_angle;
+        m_startpoint = A;
+        m_midPoint = B;
+        m_endpoint = C;
         m_isClosed = false;
+
+        if (A.DistanceTo(B) < 1e-9 || B.DistanceTo(C) < 1e-9 || A.DistanceTo(C) < 1e-9)
+            throw new ArgumentException("Defining points must be distinct.");
+
+        Vector3d vAB = B - A;
+        Vector3d vAC = C - A;
+        Vector3d normal = vAB.CrossProduct(vAC);
+
+        if (normal.Length < 1e-9)
+            throw new ArgumentException("Defining points are collinear.");
+
+        m_normal = normal.GetNormal();
+
+        Vector3d vBC = C - B;
+        Point3d midAB = A + (B - A) * 0.5;
+        Point3d midBC = B + (C - B) * 0.5;
+
+        double[,] M = new double[3, 3] {
+        { m_normal.X, m_normal.Y, m_normal.Z },
+        { vAB.X, vAB.Y, vAB.Z },
+        { vBC.X, vBC.Y, vBC.Z }
+            };
+
+                double[] V = new double[3] {
+            m_normal.DotProduct(A.GetAsVector()),
+            vAB.DotProduct(midAB.GetAsVector()),
+            vBC.DotProduct(midBC.GetAsVector())
+            };
+
+        double detM = M[0, 0] * (M[1, 1] * M[2, 2] - M[1, 2] * M[2, 1]) -
+                      M[0, 1] * (M[1, 0] * M[2, 2] - M[1, 2] * M[2, 0]) +
+                      M[0, 2] * (M[1, 0] * M[2, 1] - M[1, 1] * M[2, 0]);
+
+        if (Math.Abs(detM) < 1e-9)
+            throw new InvalidOperationException("Could not solve for the arc center.");
+
+        double invDet = 1.0 / detM;
+
+        double detX = M[0, 0] * (M[1, 1] * V[2] - M[1, 2] * V[1]) -
+                      M[0, 1] * (M[1, 0] * V[2] - M[1, 2] * V[0]) +
+                      M[0, 2] * (M[1, 0] * V[1] - M[1, 1] * V[0]);
+
+        double detY = M[0, 0] * (V[1] * M[2, 2] - V[2] * M[1, 2]) -
+                      V[0] * (M[1, 0] * M[2, 2] - M[1, 2] * M[2, 0]) +
+                      M[0, 2] * (M[1, 0] * V[2] - M[1, 2] * V[0]);
+
+        double detZ = M[0, 0] * (M[1, 1] * V[2] - M[1, 2] * V[1]) -
+                      M[0, 1] * (M[1, 0] * V[2] - M[1, 2] * V[0]) +
+                      V[0] * (M[1, 0] * M[2, 1] - M[1, 1] * M[2, 0]);
+
+        // Ma trận nghịch đảo nhân với vector V để tìm nghiệm
+        // Đây là cách viết khác của quy tắc Cramer
+        double cx = ((M[1, 1] * M[2, 2] - M[1, 2] * M[2, 1]) * V[0] +
+                      (M[0, 2] * M[2, 1] - M[0, 1] * M[2, 2]) * V[1] +
+                      (M[0, 1] * M[1, 2] - M[0, 2] * M[1, 1]) * V[2]) * invDet;
+
+        double cy = ((M[1, 2] * M[2, 0] - M[1, 0] * M[2, 2]) * V[0] +
+                      (M[0, 0] * M[2, 2] - M[0, 2] * M[2, 0]) * V[1] +
+                      (M[0, 2] * M[1, 0] - M[0, 0] * M[1, 2]) * V[2]) * invDet;
+
+        double cz = ((M[1, 0] * M[2, 1] - M[1, 1] * M[2, 0]) * V[0] +
+                      (M[0, 1] * M[2, 0] - M[0, 0] * M[2, 1]) * V[1] +
+                      (M[0, 0] * M[1, 1] - M[0, 1] * M[1, 0]) * V[2]) * invDet;
+
+        m_centerPoint = new Point3d(cx, cy, cz);
+        m_radius = m_centerPoint.DistanceTo(A);
+        m_plane = new GeoPlane(m_centerPoint, m_normal);
+
+        Vector3d vStart = A - m_centerPoint;
+        Vector3d vMid = B - m_centerPoint;
+        Vector3d vEnd = C - m_centerPoint;
+
+        double angle1 = vStart.GetAngleTo(vMid);
+        if (vStart.CrossProduct(vMid).DotProduct(m_normal) < 0) angle1 = -angle1;
+
+        double angle2 = vMid.GetAngleTo(vEnd);
+        if (vMid.CrossProduct(vEnd).DotProduct(m_normal) < 0) angle2 = -angle2;
+
+        m_angle = angle1 + angle2;
+        if (m_angle < 0) m_angle += 2 * Math.PI;
+
+        m_startAngle = 0.0;
+        m_endAngle = m_angle;
+        m_length = m_angle * m_radius;
+    }
+
+    public GeoArc(Arc arc)
+    {
+        if (arc == null)
+            throw new ArgumentNullException(nameof(arc));
+
+        // Lấy các điểm đặc trưng
+        m_startpoint = arc.StartPoint;
+        m_endpoint = arc.EndPoint;
+        m_midPoint = arc.GetPointAtDist(arc.Length / 2.0);
+
+        // Dựng lại từ 3 điểm
+        var reconstructed = new GeoArc(m_startpoint, m_midPoint, m_endpoint);
+
+        // Gán toàn bộ dữ liệu hình học
+        m_centerPoint = reconstructed.CenterPoint;
+        m_normal = reconstructed.Normal;
+        m_plane = reconstructed.Plane;
+        m_radius = reconstructed.Radius;
+        m_angle = reconstructed.Angle;
+        m_length = reconstructed.Length;
+        m_startAngle = reconstructed.StartAngle;
+        m_endAngle = reconstructed.EndAngle;
+        m_isClosed = reconstructed.IsClosed;
     }
 
     #endregion
@@ -714,16 +961,44 @@ public sealed class GeoArc : GeoCurves
     #region Override
 
     /// <summary>
-    /// Returns the local coordinate system at a parameter t (0 to 1) along the arc.
+    /// Returns the local coordinate system at parameter t along the arc,
+    /// where:
+    /// - Y-axis is the tangent direction along the arc (from start to end),
+    /// - Z-axis is the normal of the arc's plane,
+    /// - X-axis is Y × Z (to the right),
+    /// and Z is recomputed as X × Y to ensure orthonormality.
     /// </summary>
     public override GeoCoordinateSystem CoordinateSystemAtParameter(double t)
     {
         Point3d origin = PointAtParameter(t);
-        Vector3d tangent = TangentAtParameter(t);
-        Vector3d z = m_normal;
+        Vector3d y = TangentAtParameter(t);             // Along the arc
+        Vector3d z = m_normal.GetNormal();              // Plane normal
 
-        Vector3d y = z.CrossProduct(tangent).GetNormal();
-        Vector3d x = tangent.GetNormal();
+        Vector3d x = y.CrossProduct(z).GetNormal();     // Right of movement
+        z = x.CrossProduct(y).GetNormal();              // Re-normalize Z
+
+        return new GeoCoordinateSystem(origin, x, y, z);
+    }
+
+    /// <summary>
+    /// Returns the local coordinate system at parameter t along the arc,
+    /// with Z-axis fixed as global vertical.
+    /// - Y-axis is the tangent direction along the arc,
+    /// - X-axis is Y × Z (to the right),
+    /// and Z is recomputed as X × Y to ensure orthonormality.
+    /// </summary>
+    public override GeoCoordinateSystem CoordinateSystemAtParameterFixZ(double t)
+    {
+        Point3d origin = PointAtParameter(t);
+        Vector3d y = TangentAtParameter(t);             // Arc direction
+        Vector3d z = Vector3d.ZAxis;                    // Global vertical
+
+        Vector3d x = y.CrossProduct(z).GetNormal();
+
+        if (x.Length < Constants.DefaultTolerance)
+            x = Vector3d.XAxis;
+
+        z = x.CrossProduct(y).GetNormal();              // Re-adjust Z
 
         return new GeoCoordinateSystem(origin, x, y, z);
     }
@@ -817,9 +1092,29 @@ public sealed class GeoArc : GeoCurves
     /// <summary>
     /// Reverses the arc direction (start ↔ end).
     /// </summary>
-    public override GeoCurves Reverse()
+    public override void Reverse()
     {
-        return new GeoArc(m_endpoint, m_midPoint, m_startpoint);
+        // Đổi start và end point
+        var temp = m_startpoint;
+        m_startpoint = m_endpoint;
+        m_endpoint = temp;
+
+        // Tính lại midpoint theo hướng mới
+        m_midPoint = PointAtParameter(0.5);
+
+        // Dựng lại toàn bộ hình học bằng constructor tạm thời
+        var reversed = new GeoArc(m_startpoint, m_midPoint, m_endpoint);
+
+        // Cập nhật lại toàn bộ thuộc tính hình học
+        m_centerPoint = reversed.CenterPoint;
+        m_normal = reversed.Normal;
+        m_plane = reversed.Plane;
+        m_radius = reversed.Radius;
+        m_angle = reversed.Angle;
+        m_length = reversed.Length;
+        m_startAngle = reversed.StartAngle;
+        m_endAngle = reversed.EndAngle;
+        m_isClosed = reversed.IsClosed;
     }
 
     /// <summary>
@@ -835,34 +1130,32 @@ public sealed class GeoArc : GeoCurves
             return result;
         }
 
-        var sortedParams = parameters
-            .Select(p => Math.Max(0, Math.Min(1, p)))
+        // Clamp + sort t values
+        var tValues = parameters
+            .Select(t => Math.Max(0, Math.Min(1, t)))
+            .Concat(new[] { 0.0, 1.0 }) // Bắt buộc có đầu cuối
             .Distinct()
-            .OrderBy(p => p)
+            .OrderBy(t => t)
             .ToList();
 
-        double prevT = 0;
+        // Lấy các điểm theo t
+        var points = tValues.Select(PointAtParameter).ToList();
 
-        foreach (var t in sortedParams)
+        // Duyệt từng cặp điểm liên tiếp → tạo GeoArc
+        for (int i = 0; i < points.Count - 1; i++)
         {
-            if (Math.Abs(t - prevT) < 1e-6) continue;
+            var pt1 = points[i];
+            var pt2 = points[i + 1];
+            var mid = PointAtParameter((tValues[i] + tValues[i + 1]) / 2.0);
 
-            Point3d pt1 = PointAtParameter(prevT);
-            Point3d pt2 = PointAtParameter(t);
-            Point3d mid = PointAtParameter((prevT + t) / 2.0);
-
-            result.Add(new GeoArc(pt1, mid, pt2));
-
-            prevT = t;
-        }
-
-        if (prevT < 1.0 - 1e-6)
-        {
-            Point3d pt1 = PointAtParameter(prevT);
-            Point3d pt2 = PointAtParameter(1.0);
-            Point3d mid = PointAtParameter((prevT + 1.0) / 2.0);
-
-            result.Add(new GeoArc(pt1, mid, pt2));
+            try
+            {
+                result.Add(new GeoArc(pt1, mid, pt2));
+            }
+            catch
+            {
+                // Bỏ qua đoạn nếu lỗi (trùng điểm, colinear, ...)
+            }
         }
 
         return result;
@@ -920,6 +1213,54 @@ public sealed class GeoArc : GeoCurves
             return IntersectWithPolycurve(poly);
 
         throw new NotSupportedException($"GeoArc does not support intersection with {other.GetType().Name}");
+    }
+
+    public override Entity[] Test()
+    {
+        try
+        {
+            Point3d realCenter = this.CenterPoint;
+            Vector3d realNormal = this.Normal;
+            double realRadius = this.Radius;
+
+            Vector3d ocsX;
+            double tolerance = 1.0 / 64.0;
+
+            if (Math.Abs(realNormal.X) < tolerance && Math.Abs(realNormal.Y) < tolerance)
+            {
+                ocsX = Vector3d.YAxis.CrossProduct(realNormal).GetNormal();
+            }
+            else
+            {
+                ocsX = Vector3d.ZAxis.CrossProduct(realNormal).GetNormal();
+            }
+
+            Vector3d ocsY = realNormal.CrossProduct(ocsX).GetNormal();
+
+            Vector3d startVector = this.StartPoint - realCenter;
+
+            double startAngleInOCS = Math.Atan2(startVector.DotProduct(ocsY), startVector.DotProduct(ocsX));
+
+            double endAngleInOCS = startAngleInOCS + this.Angle;
+
+            var arc = new Arc(
+                realCenter,
+                realNormal,
+                realRadius,
+                startAngleInOCS,
+                endAngleInOCS
+            )
+            {
+                ColorIndex = 4
+            };
+
+            return new Entity[] { arc };
+        }
+        catch (System.Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"Error creating Arc for Test(): {ex.Message}");
+            return new Entity[0];
+        }
     }
 
     #endregion
@@ -1045,7 +1386,7 @@ public sealed class GeoArc : GeoCurves
 
     #endregion
 
-    #region Public Function
+    #region Public Method
 
     /// <summary>
     /// Returns the tangent vector at a parameter t (from 0 to 1) along the arc.
@@ -1064,6 +1405,50 @@ public sealed class GeoArc : GeoCurves
         Vector3d tangent = -Math.Sin(angle) * startVec + Math.Cos(angle) * orthoVec;
 
         return tangent.GetNormal();
+    }
+
+    /// <summary>
+    /// Tính tham số t (0 ≤ t ≤ 1) của một điểm bất kỳ so với GeoArc,
+    /// bằng cách chiếu toàn bộ cung tròn và điểm kiểm tra xuống mặt phẳng OXY.
+    /// </summary>
+    /// <param name="point">Điểm cần tính t</param>
+    /// <returns>Giá trị t đã clamp</returns>
+    /// <summary>
+    /// Tính tham số t (0 ≤ t ≤ 1) của một điểm bất kỳ so với GeoArc,
+    /// bằng cách chiếu toàn bộ cung tròn và điểm kiểm tra xuống mặt phẳng OXY.
+    /// </summary>
+    /// <param name="point">Điểm cần tính t</param>
+    /// <returns>Giá trị t đã clamp</returns>
+    public override double ParameterAtPoint2D(Point3d point)
+    {
+        // 1. Chiếu điểm tâm + start + normal xuống mặt phẳng OXY
+        Point3d center = new Point3d(CenterPoint.X, CenterPoint.Y, 0);
+        Point3d start = new Point3d(StartPoint.X, StartPoint.Y, 0);
+        Point3d test = new Point3d(point.X, point.Y, 0);
+
+        // 2. Vector bán kính bắt đầu
+        Vector3d from = (start - center).GetNormal();
+
+        // 3. Vector vuông góc (theo chiều quay, XOY ⇒ Z lên trên)
+        Vector3d z = Vector3d.ZAxis; // ép dùng OXY luôn
+        Vector3d ortho = z.CrossProduct(from).GetNormal();
+
+        // 4. Vector từ tâm đến điểm test
+        Vector3d to = (test - center).GetNormal();
+
+        // 5. Tính cos/sin → Atan2
+        double cos = to.DotProduct(from);
+        double sin = to.DotProduct(ortho);
+
+        double angle = Math.Atan2(sin, cos);
+        if (angle < 0) angle += 2 * Math.PI;
+
+        // 6. Clamp theo góc quét
+        if (angle > Angle) angle = Angle;
+
+        // 7. Nội suy t
+        double t = angle / Angle;
+        return Math.Max(0, Math.Min(1, t));
     }
 
     #endregion
@@ -1164,10 +1549,26 @@ public sealed class GeoPolycurve: GeoCurves
     /// <summary>
     /// Returns the coordinate system at a given normalized parameter t along the full polycurve.
     /// </summary>
+    /// <summary>
+    /// Returns the local coordinate system at parameter t along the polycurve.
+    /// This delegates the computation to the corresponding sub-segment (GeoLine or GeoArc),
+    /// preserving the local behavior (e.g., using arc normal for Z).
+    /// </summary>
     public override GeoCoordinateSystem CoordinateSystemAtParameter(double t)
     {
         var (index, localT) = GetSegmentAndLocalT(t);
         return Segments[index].CoordinateSystemAtParameter(localT);
+    }
+
+    /// <summary>
+    /// Returns the local coordinate system at parameter t along the polycurve,
+    /// with Z-axis fixed as global vertical (Vector3d.ZAxis).
+    /// The computation is delegated to the corresponding segment.
+    /// </summary>
+    public override GeoCoordinateSystem CoordinateSystemAtParameterFixZ(double t)
+    {
+        var (index, localT) = GetSegmentAndLocalT(t);
+        return Segments[index].CoordinateSystemAtParameterFixZ(localT);
     }
 
     /// <summary>
@@ -1261,38 +1662,16 @@ public sealed class GeoPolycurve: GeoCurves
     public override GeoCurves PullOntoPlane(GeoPlane plane)
     {
         var projectedSegments = Segments.Select(s => s.PullOntoPlane(plane)).ToList();
-        var projectedVertices = projectedSegments.Select(s => s.StartPoint).ToList();
-        projectedVertices.Add(projectedSegments.Last().EndPoint);
-
-        return new GeoPolycurve
-        {
-            Segments = projectedSegments,
-            Vertices = projectedVertices,
-            StartPoint = projectedSegments.First().StartPoint,
-            EndPoint = projectedSegments.Last().EndPoint,
-            IsClosed = this.IsClosed,
-            Length = projectedSegments.Sum(s => s.Length)
-        };
+        return new GeoPolycurve(projectedSegments);
     }
 
     /// <summary>
     /// Reverses the direction of the polycurve and all its segments.
     /// </summary>
-    public override GeoCurves Reverse()
+    public static List<GeoPolycurve> PullMultipleOntoPlane(List<GeoCurves> segments, GeoPlane plane)
     {
-        var reversedSegments = Segments.Select(s => s.Reverse()).Reverse().ToList();
-        var reversedVertices = reversedSegments.Select(s => s.StartPoint).ToList();
-        reversedVertices.Add(reversedSegments.Last().EndPoint);
-
-        return new GeoPolycurve
-        {
-            Segments = reversedSegments,
-            Vertices = reversedVertices,
-            StartPoint = reversedSegments.First().StartPoint,
-            EndPoint = reversedSegments.Last().EndPoint,
-            IsClosed = this.IsClosed,
-            Length = this.Length
-        };
+        var projected = segments.Select(s => s.PullOntoPlane(plane)).ToList();
+        return GeoPolycurve.ByGroupCurves(projected);
     }
 
     /// <summary>
@@ -1410,10 +1789,315 @@ public sealed class GeoPolycurve: GeoCurves
         return IntersectionResult.None();
     }
 
+    public override void Reverse()
+    {
+        // Đảo hướng từng segment + đảo thứ tự toàn bộ
+        Segments = Segments.Select(s => { s.Reverse(); return s; }).Reverse().ToList();
+
+        // Cập nhật lại Vertices
+        Vertices = Segments.Select(s => s.StartPoint).ToList();
+        Vertices.Add(Segments.Last().EndPoint);
+
+        // Cập nhật lại start/end point
+        _startPoint = Vertices.First();
+        _endPoint = Vertices.Last();
+    }
+
+    public override Entity[] Test()
+    {
+        var pts = new Point3dCollection();
+        foreach (var pt in Vertices)
+            pts.Add(pt);
+
+        var polyline = new Polyline3d(Poly3dType.SimplePoly, pts, false)
+        {
+            ColorIndex = 4
+        };
+
+        return new Entity[] { polyline };
+    }
+
+    /// <summary>
+    /// Tính tham số t (0 ≤ t ≤ 1) của một điểm bất kỳ so với GeoPolycurve,
+    /// bằng cách chiếu toàn bộ các đoạn xuống mặt phẳng OXY và tìm đoạn gần nhất.
+    /// </summary>
+    /// <param name="point">Điểm kiểm tra</param>
+    /// <returns>Giá trị t toàn cục trong polycurve (chuẩn hóa từ 0 đến 1)</returns>
+    public override double ParameterAtPoint2D(Point3d point)
+    {
+        if (Segments == null || Segments.Count == 0)
+            throw new InvalidOperationException("GeoPolycurve không có đoạn nào.");
+
+        Point3d test = new Point3d(point.X, point.Y, 0); // Chiếu xuống OXY
+
+        double closestT = 0;
+        double accumulated = 0;
+        double bestDistance = double.MaxValue;
+
+        foreach (var segment in Segments)
+        {
+            Point3d p0 = new Point3d(segment.StartPoint.X, segment.StartPoint.Y, 0);
+            Point3d p1 = new Point3d(segment.EndPoint.X, segment.EndPoint.Y, 0);
+
+            Vector3d lineVec = p1 - p0;
+            Vector3d toTest = test - p0;
+
+            double len2 = lineVec.LengthSqrd;
+            if (len2 < Constants.DefaultTolerance)
+            {
+                accumulated += segment.Length;
+                continue;
+            }
+
+            double tLocal = toTest.DotProduct(lineVec) / len2;
+            tLocal = Math.Max(0, Math.Min(1, tLocal));
+
+            Point3d projected = p0 + tLocal * lineVec;
+            double distance = test.DistanceTo(projected);
+
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+
+                double absLength = accumulated + tLocal * segment.Length;
+                closestT = absLength / Length;
+            }
+
+            accumulated += segment.Length;
+        }
+
+        return closestT;
+    }
     #endregion
 
     #region Constructor
 
+    /// <summary>
+    /// Initializes a new <see cref="GeoPolycurve"/> by connecting a list of continuous <see cref="GeoCurves"/> segments.
+    /// </summary>
+    /// <param name="curves">The list of curve segments to connect into a single polycurve.</param>
+    /// <exception cref="ArgumentException">
+    /// Thrown if:
+    /// <list type="bullet">
+    /// <item><description>The list is null or empty.</description></item>
+    /// <item><description>The segments cannot be connected into a single continuous chain.</description></item>
+    /// </list>
+    /// </exception>
+    /// <remarks>
+    /// The segments will be automatically ordered and reversed (if necessary) to form a continuous polycurve.
+    /// </remarks>
+    public GeoPolycurve(List<GeoCurves> curves)
+    {
+        if (curves == null || curves.Count == 0)
+            throw new ArgumentException("GeoPolycurve requires at least one segment.");
+
+        var remaining = new List<GeoCurves>(curves);
+        var points = new LinkedList<Point3d>();
+        var segments = new LinkedList<GeoCurves>();
+
+        var seed = remaining[0];
+        remaining.RemoveAt(0);
+        points.AddLast(seed.StartPoint);
+        points.AddLast(seed.EndPoint);
+        segments.AddLast(seed);
+
+        bool extended;
+        do
+        {
+            extended = false;
+
+            for (int i = 0; i < remaining.Count; i++)
+            {
+                var c = remaining[i];
+                if (points.Last.Value.IsEqualTo(c.StartPoint)) { segments.AddLast(c); points.AddLast(c.EndPoint); remaining.RemoveAt(i); extended = true; break; }
+                if (points.Last.Value.IsEqualTo(c.EndPoint)) { c.Reverse(); segments.AddLast(c); points.AddLast(c.EndPoint); remaining.RemoveAt(i); extended = true; break; }
+                if (points.First.Value.IsEqualTo(c.EndPoint)) { c.Reverse(); segments.AddFirst(c); points.AddFirst(c.StartPoint); remaining.RemoveAt(i); extended = true; break; }
+                if (points.First.Value.IsEqualTo(c.StartPoint)) { segments.AddFirst(c); points.AddFirst(c.EndPoint); remaining.RemoveAt(i); extended = true; break; }
+            }
+
+        } while (extended);
+
+        if (remaining.Count > 0)
+            throw new ArgumentException("Không thể ghép toàn bộ thành một polycurve duy nhất.");
+
+        Segments = segments.ToList();
+        Vertices = points.ToList();
+        _startPoint = Vertices.First();
+        _endPoint = Vertices.Last();
+        _length = Segments.Sum(c => c.Length);
+        m_isClosed = _startPoint.DistanceTo(_endPoint) < Constants.DefaultTolerance;
+    }
+
+    /// <summary>
+    /// Initializes a new <see cref="GeoPolycurve"/> by connecting a list of ordered <see cref="Point3d"/> points using straight lines.
+    /// </summary>
+    /// <param name="points">The list of points to connect in order.</param>
+    /// <exception cref="ArgumentException">
+    /// Thrown if:
+    /// <list type="bullet">
+    /// <item><description>Less than 2 points are provided.</description></item>
+    /// <item><description>All points are identical or too close together.</description></item>
+    /// </list>
+    /// </exception>
+    /// <remarks>
+    /// This constructor creates a polycurve consisting only of <see cref="GeoLine"/> segments.
+    /// </remarks>
+    public GeoPolycurve(List<Point3d> points)
+    {
+        if (points == null || points.Count < 2)
+            throw new ArgumentException("Cần ít nhất 2 điểm để tạo GeoPolycurve.");
+
+        var segments = new List<GeoCurves>();
+        for (int i = 0; i < points.Count - 1; i++)
+        {
+            if (points[i].DistanceTo(points[i + 1]) < Constants.DefaultTolerance)
+                continue; // bỏ qua đoạn trùng điểm
+
+            segments.Add(new GeoLine(points[i], points[i + 1]));
+        }
+
+        if (segments.Count == 0)
+            throw new ArgumentException("Danh sách điểm không hợp lệ (các điểm trùng nhau).");
+
+        Segments = segments;
+        Vertices = new List<Point3d>(points);
+        _startPoint = points.First();
+        _endPoint = points.Last();
+        _length = segments.Sum(s => s.Length);
+        m_isClosed = _startPoint.DistanceTo(_endPoint) < Constants.DefaultTolerance;
+    }
+
+    /// <summary>
+    /// Khởi tạo GeoPolycurve từ đối tượng AutoCAD Polyline3d.
+    /// Yêu cầu đang nằm trong Transaction đang mở.
+    /// </summary>
+    /// <param name="polyline3d">Đối tượng Polyline3d đã mở trong transaction hiện tại.</param>
+    public GeoPolycurve(Polyline3d polyline3d)
+    {
+        if (polyline3d == null)
+            throw new ArgumentNullException(nameof(polyline3d));
+
+        var pts = new List<Point3d>();
+
+        foreach (ObjectId vId in polyline3d)
+        {
+            var vertex = vId.GetObject(OpenMode.ForRead) as PolylineVertex3d;
+            if (vertex != null)
+                pts.Add(vertex.Position);
+        }
+
+        if (pts.Count < 2)
+            throw new ArgumentException("Polyline3d phải có ít nhất 2 điểm để tạo GeoPolycurve.");
+
+        var segments = new List<GeoCurves>();
+        for (int i = 0; i < pts.Count - 1; i++)
+        {
+            if (pts[i].DistanceTo(pts[i + 1]) > Constants.DefaultTolerance)
+                segments.Add(new GeoLine(pts[i], pts[i + 1]));
+        }
+
+        Segments = segments;
+        Vertices = pts;
+        _startPoint = pts.First();
+        _endPoint = pts.Last();
+        _length = segments.Sum(s => s.Length);
+        m_isClosed = _startPoint.DistanceTo(_endPoint) < Constants.DefaultTolerance;
+    }
+
     #endregion
 
+    #region Method
+
+    /// <summary>
+    /// Groups a list of <see cref="GeoCurves"/> into multiple continuous <see cref="GeoPolycurve"/> chains.
+    /// </summary>
+    /// <param name="geoCurves">A list of unordered curve segments to group.</param>
+    /// <returns>
+    /// A list of <see cref="GeoPolycurve"/> objects, each representing a connected chain of segments.
+    /// </returns>
+    /// <remarks>
+    /// This method automatically reorders and reverses segments if necessary to form continuous polycurves.
+    /// Each chain is built by connecting curve endpoints within the default tolerance.
+    /// Segments that cannot be connected to others will form their own individual polycurve.
+    /// </remarks>
+    public static List<GeoPolycurve> ByGroupCurves(List<GeoCurves> geoCurves)
+    {
+        if (geoCurves == null || geoCurves.Count == 0)
+            return new List<GeoPolycurve>();
+
+        var remaining = new List<GeoCurves>(geoCurves);
+        var result = new List<GeoPolycurve>();
+
+        while (remaining.Count > 0)
+        {
+            var segments = new LinkedList<GeoCurves>();
+            var points = new LinkedList<Point3d>();
+
+            var seed = remaining[0];
+            remaining.RemoveAt(0);
+
+            segments.AddLast(seed);
+            points.AddLast(seed.StartPoint);
+            points.AddLast(seed.EndPoint);
+
+            bool extended;
+
+            do
+            {
+                extended = false;
+
+                for (int i = 0; i < remaining.Count; i++)
+                {
+                    var c = remaining[i];
+
+                    if (points.Last.Value.IsEqualTo(c.StartPoint))
+                    {
+                        points.AddLast(c.EndPoint);
+                        segments.AddLast(c);
+                        remaining.RemoveAt(i);
+                        extended = true;
+                        break;
+                    }
+
+                    if (points.Last.Value.IsEqualTo(c.EndPoint))
+                    {
+                        c.Reverse(); // đảo tại chỗ, không gán
+                        points.AddLast(c.EndPoint);
+                        segments.AddLast(c);
+                        remaining.RemoveAt(i);
+                        extended = true;
+                        break;
+                    }
+
+                    if (points.First.Value.IsEqualTo(c.EndPoint))
+                    {
+                        c.Reverse(); // Đảo tại chỗ
+                        points.AddFirst(c.StartPoint);
+                        segments.AddFirst(c);
+                        remaining.RemoveAt(i);
+                        extended = true;
+                        break;
+                    }
+
+                    if (points.First.Value.IsEqualTo(c.StartPoint))
+                    {
+                        points.AddFirst(c.EndPoint);
+                        segments.AddFirst(c);
+                        remaining.RemoveAt(i);
+                        extended = true;
+                        break;
+                    }
+                }
+
+            } while (extended);
+
+            // Sau khi nối xong 1 nhóm → tạo GeoPolycurve
+            var poly = new GeoPolycurve(segments.ToList());
+            result.Add(poly);
+        }
+
+        return result;
+    }
+
+    #endregion
 }

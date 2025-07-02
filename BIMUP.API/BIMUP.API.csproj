@@ -61,7 +61,7 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="Civil3D.Extensions.cs" />
+    <Compile Include="Civil3D.cs" />
     <Compile Include="Geometry.cs" />
     <Compile Include="GeometryUtils.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
