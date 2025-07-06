@@ -378,7 +378,19 @@ public sealed class GeoLine: GeoCurves
     {
         var lineVec = EndPoint - StartPoint;
         var toPoint = point - StartPoint;
-        return toPoint.DotProduct(lineVec) / lineVec.LengthSqrd;
+
+        // Trường hợp đoạn thẳng có chiều dài gần bằng không
+        if (lineVec.LengthSqrd < Constants.DefaultTolerance)
+        {
+            return 0.0;
+        }
+
+        // Tính toán tham số t của hình chiếu vuông góc lên đường thẳng vô hạn
+        double t = toPoint.DotProduct(lineVec) / lineVec.LengthSqrd;
+
+        // "Kẹp" (clamp) giá trị t vào khoảng [0, 1]
+        // Điều này đảm bảo điểm tương ứng luôn nằm trên đoạn thẳng.
+        return Math.Max(0, Math.Min(1, t));
     }
 
     /// <summary>
@@ -2098,6 +2110,13 @@ public sealed class GeoPolycurve: GeoCurves
 
         return result;
     }
+
+    #endregion
+}
+
+public class GeoFace
+{
+    #region Fields
 
     #endregion
 }

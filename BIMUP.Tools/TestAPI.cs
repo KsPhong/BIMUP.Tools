@@ -1145,7 +1145,107 @@ namespace BIMUP.Core
 
         #endregion
 
+        #region Polycurve
+        [CommandMethod("BIMUP_GeoPolyCurve_CoordinateSystemAtParameter")]
+        public void TestCoordinateSystemOriginOn3dPoly()
+        {
+            var doc = Application.DocumentManager.MdiActiveDocument;
+            if (doc == null) return;
+            var db = doc.Database;
+            var ed = doc.Editor;
 
+            // Bước 1: Cho người dùng chọn 1 3DPolyline
+            var entOptions = new PromptEntityOptions("\n👉 Chọn một đối tượng 3D Polyline: ");
+            entOptions.SetRejectMessage("\nĐối tượng được chọn phải là 3D Polyline.");
+            entOptions.AddAllowedClass(typeof(Polyline3d), true);
 
+            var entResult = ed.GetEntity(entOptions);
+            if (entResult.Status != PromptStatus.OK) return;
+
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                var p3d = tr.GetObject(entResult.ObjectId, OpenMode.ForRead) as Polyline3d;
+                if (p3d == null) return;
+
+                // Bước 2: Dùng hàm tạo GeoPolycurve từ Polyline3d
+                var geoPoly = new GeoPolycurve(p3d);
+                var btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
+
+                // Bước 3: Test tại các tham số t
+                var tValues = new[] { 0.25, 0.5, 0.75 };
+
+                foreach (var t in tValues)
+                {
+                    var coordSys = geoPoly.CoordinateSystemAtParameter(t);
+                    var originPoint = coordSys.Origin;
+
+                    // Vẽ một đường tròn tại gốc của hệ tọa độ
+                    var circle = new Circle(originPoint, Vector3d.ZAxis, 1.0)
+                    {
+                        ColorIndex = 2 // Màu vàng
+                    };
+
+                    btr.AppendEntity(circle);
+                    tr.AddNewlyCreatedDBObject(circle, true);
+                }
+
+                tr.Commit();
+                ed.WriteMessage($"\n✅ Đã tạo thành công {tValues.Length} vòng tròn tại các điểm test.");
+            }
+        }
+
+        [CommandMethod("BIMUP_GeoPolyCurve_PointAtParameter")]
+        public void TestParameterAtPointOn3dPoly()
+        {
+            var doc = Application.DocumentManager.MdiActiveDocument;
+            if (doc == null) return;
+            var db = doc.Database;
+            var ed = doc.Editor;
+
+            // Chọn một đối tượng 3D Polyline
+            var entOptions = new PromptEntityOptions("\n👉 Chọn một đối tượng 3D Polyline:");
+            entOptions.SetRejectMessage("\nĐối tượng phải là 3D Polyline.");
+            entOptions.AddAllowedClass(typeof(Polyline3d), true);
+
+            var entResult = ed.GetEntity(entOptions);
+            if (entResult.Status != PromptStatus.OK) return;
+
+            // Chọn một điểm để kiểm tra
+            var ptResult = ed.GetPoint("\n👉 Chọn một điểm để tìm điểm gần nhất trên tuyến:");
+            if (ptResult.Status != PromptStatus.OK) return;
+            var testPoint = ptResult.Value;
+
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                var p3d = tr.GetObject(entResult.ObjectId, OpenMode.ForRead) as Polyline3d;
+                if (p3d == null) return;
+
+                var geoPoly = new GeoPolycurve(p3d);
+                var btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
+
+                // Sử dụng logic tương tự hàm ParameterAtPoint để tìm điểm gần nhất
+                double bestT = geoPoly.ParameterAtPoint(testPoint);
+                Point3d closestPointOnPolycurve = geoPoly.PointAtParameter(bestT);
+
+                // Vẽ đường thẳng từ điểm chọn đến điểm gần nhất trên polyline
+                var connectionLine = new Line(testPoint, closestPointOnPolycurve)
+                {
+                    ColorIndex = 1 // Màu Đỏ
+                };
+                btr.AppendEntity(connectionLine);
+                tr.AddNewlyCreatedDBObject(connectionLine, true);
+
+                // Vẽ thêm 1 vòng tròn tại điểm gần nhất để làm nổi bật
+                var resultCircle = new Circle(closestPointOnPolycurve, Vector3d.ZAxis, 1.0)
+                {
+                    ColorIndex = 3 // Màu Lục
+                };
+                btr.AppendEntity(resultCircle);
+                tr.AddNewlyCreatedDBObject(resultCircle, true);
+
+                tr.Commit();
+            }
+        }
+        #endregion
     }
 }
