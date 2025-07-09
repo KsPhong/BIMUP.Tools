@@ -666,6 +666,7 @@ public sealed class GeoLine: GeoCurves
     /// </summary>
     private IntersectionResult IntersectWithArc(GeoArc arc)
     {
+        // TODO: Check cái này nhé
         var ed = Application.DocumentManager.MdiActiveDocument.Editor;
         var p = StartPoint;
         var q = EndPoint;
