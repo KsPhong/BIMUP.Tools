@@ -1,17 +1,165 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.DatabaseServices;
+using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Geometry;
 
 public static class GeometryUtils
 {
+    /// <summary>
+    /// Compares two 3D points with default tolerance.
+    /// </summary>
     public static bool Equals(Point3d p1, Point3d p2)
     {
-        // Sử dụng dung sai mặc định để so sánh
         return p1.IsEqualTo(p2, new Tolerance(Constants.DefaultTolerance, Constants.DefaultTolerance));
     }
+
+    /// <summary>
+    /// Removes duplicate 3D points from the list.
+    /// </summary>
+    public static List<Point3d> OverKillPoint3d(List<Point3d> points)
+    {
+        if (points == null || points.Count == 0) return new List<Point3d>();
+
+        var sorted = points.OrderBy(p => p.X).ThenBy(p => p.Y).ThenBy(p => p.Z).ToList();
+        var result = new List<Point3d>();
+        Point3d? last = null;
+
+        foreach (var pt in sorted)
+        {
+            if (last == null || !Equals(pt, last.Value))
+            {
+                result.Add(pt);
+                last = pt;
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Removes overlapping or duplicate GeoLine segments from a list of curves (GeoLine or GeoPolycurve).
+    /// </summary>
+    public static List<GeoLine> OverKill(List<GeoCurves> input)
+    {
+        var allLines = new List<GeoLine>();
+        foreach (var curve in input)
+        {
+            if (curve is GeoLine l) allLines.Add(l);
+            else if (curve is GeoPolycurve poly) allLines.AddRange(poly.Segments.OfType<GeoLine>());
+        }
+
+        var groups = new List<List<GeoLine>>();
+        foreach (var line in allLines)
+        {
+            var dir = line.Direction.GetNormal();
+            if (dir.X < 0 || (Math.Abs(dir.X) < 1e-6 && dir.Y < 0) ||
+                (Math.Abs(dir.X) < 1e-6 && Math.Abs(dir.Y) < 1e-6 && dir.Z < 0))
+                dir = -dir;
+
+            bool added = false;
+            foreach (var group in groups)
+            {
+                var rep = group[0];
+                var repDir = rep.Direction.GetNormal();
+                if (repDir.X < 0 || (Math.Abs(repDir.X) < 1e-6 && repDir.Y < 0) ||
+                    (Math.Abs(repDir.X) < 1e-6 && Math.Abs(repDir.Y) < 1e-6 && repDir.Z < 0))
+                    repDir = -repDir;
+
+                // Same direction
+                if (!repDir.IsParallelTo(dir, new Tolerance(1e-6, 1e-6)))
+                    continue;
+
+                // On same line
+                var v = line.StartPoint - rep.StartPoint;
+                if (repDir.CrossProduct(v).Length < 1e-6)
+                {
+                    group.Add(line);
+                    added = true;
+                    break;
+                }
+            }
+
+            if (!added)
+                groups.Add(new List<GeoLine> { line });
+        }
+
+        var result = new List<GeoLine>();
+        foreach (var group in groups)
+        {
+            if (group.Count == 0) continue;
+
+            var dir = group[0].Direction.GetNormal();
+            if (dir.X < 0 || (Math.Abs(dir.X) < 1e-6 && dir.Y < 0) ||
+                (Math.Abs(dir.X) < 1e-6 && Math.Abs(dir.Y) < 1e-6 && dir.Z < 0))
+                dir = -dir;
+
+            var origin = group[0].StartPoint;
+
+            // Collect all start and end points
+            var allPts = new List<Point3d>();
+            foreach (var l in group)
+            {
+                allPts.Add(l.StartPoint);
+                allPts.Add(l.EndPoint);
+            }
+
+            // Remove duplicates
+            if (allPts == null || allPts.Count == 0) continue;
+            var sorted = allPts.OrderBy(p => p.X).ThenBy(p => p.Y).ThenBy(p => p.Z).ToList();
+            var cleanPts = new List<Point3d>();
+            Point3d? last = null;
+            foreach (var pt in sorted)
+            {
+                if (last == null || !pt.IsEqualTo(last.Value, new Tolerance(Constants.DefaultTolerance, Constants.DefaultTolerance)))
+                {
+                    cleanPts.Add(pt);
+                    last = pt;
+                }
+            }
+
+            // Sort along direction
+            cleanPts.Sort((p1, p2) =>
+            {
+                double t1 = (p1 - origin).DotProduct(dir);
+                double t2 = (p2 - origin).DotProduct(dir);
+                return t1.CompareTo(t2);
+            });
+
+            // Generate unique segments
+            for (int i = 0; i < cleanPts.Count - 1; i++)
+            {
+                var p1 = cleanPts[i];
+                var p2 = cleanPts[i + 1];
+                if (p1.DistanceTo(p2) < Constants.DefaultTolerance) continue;
+
+                var mid = new Point3d(
+                    (p1.X + p2.X) / 2.0,
+                    (p1.Y + p2.Y) / 2.0,
+                    (p1.Z + p2.Z) / 2.0
+                );
+
+                bool matched = false;
+                foreach (var g in group)
+                {
+                    if (g.DistanceTo(mid) < Constants.DefaultTolerance)
+                    {
+                        matched = true;
+                        break;
+                    }
+                }
+
+                if (matched)
+                    result.Add(new GeoLine(p1, p2));
+            }
+        }
+
+        return result;
+    }
+
 }
 
 public static class Constants
@@ -55,9 +203,47 @@ public class GeoPlane
         _normal = normal;
     }
 
+    /// <summary>
+    /// Constructs a plane from three non-collinear points.
+    /// </summary>
+    /// <param name="p1">First point (used as origin)</param>
+    /// <param name="p2">Second point</param>
+    /// <param name="p3">Third point</param>
+    public GeoPlane(Point3d p1, Point3d p2, Point3d p3)
+    {
+        _origin = p1;
+        _normal = ((p2 - p1).CrossProduct(p3 - p1)).GetNormal(); // Compute normal vector of the plane
+    }
     #endregion
 
     #region Method
+    /// <summary>
+    /// Returns a unit X axis vector on the plane, orthogonal to the normal.
+    /// </summary>
+    public Vector3d GetXAxis()
+    {
+        // Use Z-axis as reference unless the normal is nearly vertical
+        Vector3d refVec = Math.Abs(_normal.Z) < 0.99 ? Vector3d.ZAxis : Vector3d.XAxis;
+        return _normal.CrossProduct(refVec).GetNormal(); // X axis lies on the plane
+    }
+
+    /// <summary>
+    /// Projects a 3D point onto the plane's 2D coordinate system (local X and Y).
+    /// </summary>
+    /// <param name="pt">3D point to project</param>
+    /// <returns>Projected 2D coordinates on the plane</returns>
+    public Point2d ProjectPointTo2D(Point3d pt)
+    {
+        var xAxis = GetXAxis();                                 // Local X axis on the plane
+        var yAxis = _normal.CrossProduct(xAxis).GetNormal();    // Local Y axis orthogonal to both normal and X
+
+        var v = pt - _origin;                                   // Vector from origin to point
+        double x = v.DotProduct(xAxis);                         // Projection onto X
+        double y = v.DotProduct(yAxis);                         // Projection onto Y
+
+        return new Point2d(x, y);
+    }
+
     public Entity[] Test()
     {
         // Gốc và vector cơ sở
@@ -318,6 +504,12 @@ public abstract class GeoCurves
     /// </summary>
     public abstract IntersectionResult IntersectWith(GeoCurves other);
 
+    /// <summary>
+    /// Returns the local coordinate system at the specified parameter t,
+    /// with the Z axis fixed (typically upward or normal direction).
+    /// </summary>
+    /// <param name="t">Curve parameter (usually between 0 and 1)</param>
+    /// <returns>Local coordinate system at parameter t</returns>
     public abstract GeoCoordinateSystem CoordinateSystemAtParameterFixZ(double t);
 
     public abstract Entity[] Test();
@@ -350,22 +542,30 @@ public sealed class GeoLine: GeoCurves
 
     #region Constructors
 
+    /// <summary>
+    /// Constructs a GeoLine from two 3D points.
+    /// </summary>
+    /// <param name="start">Start point of the line</param>
+    /// <param name="end">End point of the line</param>
     public GeoLine(Point3d start, Point3d end)
     {
         _startPoint = start;
         _endPoint = end;
-        _direction = (end - start).GetNormal();
-        _length = start.DistanceTo(end);
+        _direction = (end - start).GetNormal();   // Calculate unit direction vector
+        _length = start.DistanceTo(end);          // Calculate line length
     }
 
+    /// <summary>
+    /// Constructs a GeoLine from an AutoCAD Line entity.
+    /// </summary>
+    /// <param name="line">AutoCAD Line entity</param>
     public GeoLine(Line line)
     {
         _startPoint = line.StartPoint;
         _endPoint = line.EndPoint;
-        _direction = (_endPoint - _startPoint).GetNormal();
-        _length = _startPoint.DistanceTo(_endPoint);
+        _direction = (_endPoint - _startPoint).GetNormal();  // Calculate unit direction vector
+        _length = _startPoint.DistanceTo(_endPoint);         // Calculate line length
     }
-
     #endregion
 
     #region Override
@@ -664,151 +864,107 @@ public sealed class GeoLine: GeoCurves
     /// <summary>
     /// Computes intersection between this GeoLine and a GeoArc.
     /// </summary>
-    private IntersectionResult IntersectWithArc(GeoArc arc)
+    public IntersectionResult IntersectWithArc(GeoArc arc)
     {
-        // TODO: Check cái này nhé
-        var ed = Application.DocumentManager.MdiActiveDocument.Editor;
-        var p = StartPoint;
-        var q = EndPoint;
-        var d = q - p;
+        Editor ed = Application.DocumentManager.MdiActiveDocument.Editor;
 
-        ed.WriteMessage($"\n🔍 StartPoint: {p}");
-        ed.WriteMessage($"\n🔍 EndPoint: {q}");
-        ed.WriteMessage($"\n🔍 Direction d: {d}");
-
-        var planeNormal = arc.Normal;
-        var planePoint = arc.CenterPoint;
-
-        ed.WriteMessage($"\n🔍 Plane Normal: {planeNormal}");
-        ed.WriteMessage($"\n🔍 Plane Point (Center): {planePoint}");
-
-        double denom = d.DotProduct(planeNormal);
-        ed.WriteMessage($"\n🔍 Dot(d, normal): {denom}");
-
-        if (Math.Abs(denom) < Constants.DefaultTolerance)
+        // 1. Kiểm tra đồng phẳng
+        double d1 = (_startPoint - arc.CenterPoint).DotProduct(arc.Normal);
+        double d2 = (_endPoint - arc.CenterPoint).DotProduct(arc.Normal);
+        if (Math.Abs(d1) > 1e-6 || Math.Abs(d2) > 1e-6)
         {
-            ed.WriteMessage("\n✅ Đoạn song song mặt phẳng – kiểm tra đồng phẳng...");
-            double distanceToPlane = (p - planePoint).DotProduct(planeNormal);
-            ed.WriteMessage($"\n🔍 Distance to plane: {distanceToPlane}");
+            ed.WriteMessage("\n❌ Line và Arc không đồng phẳng.");
+            return IntersectionResult.None();
+        }
 
-            if (Math.Abs(distanceToPlane) > Constants.DefaultTolerance)
+        ed.WriteMessage("\n✅ Line và Arc đồng phẳng.");
+
+        // 2. Thiết lập hệ trục cục bộ của Arc
+        Vector3d xAxis = (arc.StartPoint - arc.CenterPoint).GetNormal();
+        Vector3d yAxis = arc.Normal.CrossProduct(xAxis).GetNormal();
+
+        // 3. Đưa line về 2D
+        Vector3d v1 = _startPoint - arc.CenterPoint;
+        Vector3d v2 = _endPoint - arc.CenterPoint;
+        Point2d p1 = new Point2d(v1.DotProduct(xAxis), v1.DotProduct(yAxis));
+        Point2d p2 = new Point2d(v2.DotProduct(xAxis), v2.DotProduct(yAxis));
+        Vector2d d = p2 - p1;
+
+        // 4. Phương trình bậc 2
+        double a = d.X * d.X + d.Y * d.Y;
+        double b = 2 * (p1.X * d.X + p1.Y * d.Y);
+        double c = p1.X * p1.X + p1.Y * p1.Y - arc.Radius * arc.Radius;
+        double delta = b * b - 4 * a * c;
+
+        ed.WriteMessage(string.Format("\n🧮 a={0}, b={1}, c={2}, delta={3}", a, b, c, delta));
+
+        if (delta < -1e-6)
+        {
+            ed.WriteMessage("\n❌ Không có giao điểm thực.");
+            return IntersectionResult.None();
+        }
+
+        delta = Math.Max(0, delta);
+        double sqrtDelta = Math.Sqrt(delta);
+        double t1 = (-b + sqrtDelta) / (2 * a);
+        double t2 = (-b - sqrtDelta) / (2 * a);
+
+        List<double> tList = new List<double>();
+        if (t1 >= 0 && t1 <= 1) tList.Add(t1);
+        if (t2 >= 0 && t2 <= 1 && Math.Abs(t2 - t1) > 1e-6) tList.Add(t2);
+
+        List<Point3d> intersections = new List<Point3d>();
+
+        foreach (double t in tList)
+        {
+            double x = p1.X + t * d.X;
+            double y = p1.Y + t * d.Y;
+            Point3d pt3D = arc.CenterPoint + xAxis * x + yAxis * y;
+
+            Vector3d vecToPt = pt3D - arc.CenterPoint;
+            Vector3d vecStart = arc.StartPoint - arc.CenterPoint;
+            Vector3d vecEnd = arc.EndPoint - arc.CenterPoint;
+
+            // Tính góc giữa vecStart và vecToPt
+            double dot = vecStart.GetNormal().DotProduct(vecToPt.GetNormal());
+            dot = Math.Max(-1.0, Math.Min(1.0, dot));
+            double angle = Math.Acos(dot);
+
+            // Xác định chiều quay
+            double crossZ = vecStart.CrossProduct(vecToPt).DotProduct(arc.Normal);
+            if (crossZ < 0)
+                angle = 2 * Math.PI - angle;
+
+            // Tính tổng góc cung
+            double totalDot = vecStart.GetNormal().DotProduct(vecEnd.GetNormal());
+            totalDot = Math.Max(-1.0, Math.Min(1.0, totalDot));
+            double totalAngle = Math.Acos(totalDot);
+            double totalCrossZ = vecStart.CrossProduct(vecEnd).DotProduct(arc.Normal);
+            if (totalCrossZ < 0)
+                totalAngle = 2 * Math.PI - totalAngle;
+
+            ed.WriteMessage(
+                string.Format("\n🟡 Giao tại: {0}, góc: {1}°, tổng cung: {2}°",
+                pt3D,
+                angle * 180.0 / Math.PI,
+                totalAngle * 180.0 / Math.PI)
+            );
+
+            if (angle >= 0 && angle <= totalAngle)
             {
-                ed.WriteMessage("\n❌ Đoạn không đồng phẳng với cung.");
-                return IntersectionResult.None();
-            }
-
-            // Dựng hệ trục OXY
-            var xAxis = (arc.StartPoint - arc.CenterPoint).GetNormal();
-            var yAxis = arc.Normal.CrossProduct(xAxis).GetNormal();
-
-            Func<Point3d, Point2d> to2D = pt =>
-            {
-                var vec = pt - arc.CenterPoint;
-                double x = vec.DotProduct(xAxis);
-                double y = vec.DotProduct(yAxis);
-                return new Point2d(x, y);
-            };
-
-            var p2 = to2D(p);
-            var q2 = to2D(q);
-            ed.WriteMessage($"\n🔍 p2: {p2}, q2: {q2}");
-
-            Vector2d dp = q2 - p2;
-            Vector2d cp = new Point2d(0, 0) - p2;
-
-            double a = dp.DotProduct(dp);
-            double b = 2 * cp.DotProduct(dp);
-            double c = cp.DotProduct(cp) - arc.Radius * arc.Radius;
-
-            ed.WriteMessage($"\n🔍 a: {a}, b: {b}, c: {c}");
-
-            double discriminant = b * b - 4 * a * c;
-            ed.WriteMessage($"\n🔍 Discriminant: {discriminant}");
-
-            if (discriminant < -Constants.DefaultTolerance)
-            {
-                ed.WriteMessage("\n❌ Không có nghiệm (discriminant < 0).");
-                return IntersectionResult.None();
-            }
-
-            var results = new List<Point3d>();
-
-            if (Math.Abs(discriminant) <= Constants.DefaultTolerance)
-            {
-                double t = -b / (2 * a);
-                ed.WriteMessage($"\n🔍 Một nghiệm kép t = {t}");
-
-                if (t >= -Constants.DefaultTolerance && t <= 1 + Constants.DefaultTolerance)
-                {
-                    var pt2D = p2 + t * dp;
-                    var pt3D = arc.CenterPoint + pt2D.X * xAxis + pt2D.Y * yAxis;
-                    ed.WriteMessage($"\n🔍 Giao 3D tại: {pt3D}");
-
-                    if (arc.IsPointOnArc(pt3D))
-                    {
-                        ed.WriteMessage("\n✅ Nằm trên cung!");
-                        results.Add(pt3D);
-                    }
-                    else ed.WriteMessage("\n❌ Không nằm trên cung.");
-                }
+                ed.WriteMessage("\n✅ Giao điểm nằm trong cung.");
+                intersections.Add(pt3D);
             }
             else
             {
-                double sqrtD = Math.Sqrt(discriminant);
-                double t1 = (-b - sqrtD) / (2 * a);
-                double t2 = (-b + sqrtD) / (2 * a);
-                ed.WriteMessage($"\n🔍 2 nghiệm: t1 = {t1}, t2 = {t2}");
-
-                foreach (var t in new[] { t1, t2 })
-                {
-                    if (t >= -Constants.DefaultTolerance && t <= 1 + Constants.DefaultTolerance)
-                    {
-                        var pt2D = p2 + t * dp;
-                        var pt3D = arc.CenterPoint + pt2D.X * xAxis + pt2D.Y * yAxis;
-                        ed.WriteMessage($"\n🔍 Kiểm nghiệm t = {t}, pt3D = {pt3D}");
-
-                        if (arc.IsPointOnArc(pt3D))
-                        {
-                            ed.WriteMessage("\n✅ Nằm trên cung!");
-                            results.Add(pt3D);
-                        }
-                        else ed.WriteMessage("\n❌ Không nằm trên cung.");
-                    }
-                    else ed.WriteMessage($"\n⚠️ t = {t} nằm ngoài đoạn.");
-                }
+                ed.WriteMessage("\n⚠️ Giao điểm nằm ngoài cung.");
             }
-
-            if (results.Count == 0)
-            {
-                ed.WriteMessage("\n❌ Không có giao điểm nào nằm trên cung.");
-                return IntersectionResult.None();
-            }
-
-            ed.WriteMessage($"\n✅ Tổng số giao điểm: {results.Count}");
-            return IntersectionResult.Intersect(results);
         }
 
-        // Trường hợp không đồng phẳng – giao điểm 3D
-        double t3d = (planePoint - p).DotProduct(planeNormal) / denom;
-        ed.WriteMessage($"\n🔍 t3D = {t3d}");
-
-        if (t3d < -Constants.DefaultTolerance || t3d > 1 + Constants.DefaultTolerance)
-        {
-            ed.WriteMessage("\n❌ Giao điểm nằm ngoài đoạn.");
+        if (intersections.Count == 0)
             return IntersectionResult.None();
-        }
-
-        var intersection = p + t3d * d;
-        ed.WriteMessage($"\n🔍 Giao điểm 3D: {intersection}");
-
-        if (!arc.IsPointOnArc(intersection))
-        {
-            ed.WriteMessage("\n❌ Giao điểm không nằm trên cung.");
-            return IntersectionResult.None();
-        }
-
-        ed.WriteMessage("\n✅ Giao điểm nằm trên cung.");
-        return IntersectionResult.Intersect(intersection);
+        else
+            return IntersectionResult.Intersect(intersections);
     }
 
     /// <summary>
@@ -925,6 +1081,84 @@ public sealed class GeoLine: GeoCurves
             : IntersectionResult.None();
     }
 
+    #endregion
+
+    #region Methods
+    /// <summary>
+    /// Computes the shortest distance between this GeoLine and another GeoLine.
+    /// </summary>
+    /// <param name="other">The other GeoLine</param>
+    /// <returns>Minimum distance between two line segments</returns>
+    public double DistanceTo(GeoLine other)
+    {
+        var p1 = this.StartPoint;
+        var p2 = this.EndPoint;
+        var q1 = other.StartPoint;
+        var q2 = other.EndPoint;
+
+        var u = p2 - p1;
+        var v = q2 - q1;
+        var w0 = p1 - q1;
+
+        double a = u.DotProduct(u);  // u ⋅ u
+        double b = u.DotProduct(v);  // u ⋅ v
+        double c = v.DotProduct(v);  // v ⋅ v
+        double d = u.DotProduct(w0); // u ⋅ (p1 - q1)
+        double e = v.DotProduct(w0); // v ⋅ (p1 - q1)
+
+        double denom = a * c - b * b;
+        double s, t;
+
+        if (Math.Abs(denom) < 1e-8)
+        {
+            // Lines are nearly parallel → project q1 onto this line
+            s = 0;
+            t = (b > c ? d / b : e / c);
+        }
+        else
+        {
+            s = (b * e - c * d) / denom;
+            t = (a * e - b * d) / denom;
+        }
+
+        // Clamp s, t to [0, 1] to stay within the segments
+        s = Math.Max(0, Math.Min(1, s));
+        t = Math.Max(0, Math.Min(1, t));
+
+        Point3d pointOnThis = p1 + s * u;
+        Point3d pointOnOther = q1 + t * v;
+
+        return pointOnThis.DistanceTo(pointOnOther);
+    }
+
+    /// <summary>
+    /// Returns a formatted string containing geometry info of the GeoLine.
+    /// </summary>
+    /// <returns>Human-readable information string</returns>
+    public string GetInfoString()
+    {
+        var sb = new StringBuilder();
+
+        sb.AppendLine("===== GeoLine Geometry Info =====");
+        sb.AppendLine($"Start X\t{StartPoint.X:0.####}");
+        sb.AppendLine($"Start Y\t{StartPoint.Y:0.####}");
+        sb.AppendLine($"Start Z\t{StartPoint.Z:0.####}");
+        sb.AppendLine($"End X\t{EndPoint.X:0.####}");
+        sb.AppendLine($"End Y\t{EndPoint.Y:0.####}");
+        sb.AppendLine($"End Z\t{EndPoint.Z:0.####}");
+
+        var dir = EndPoint - StartPoint;
+        double length = dir.Length;
+        var unitDir = dir.GetNormal();
+
+        sb.AppendLine($"Length\t{length:0.####}");
+        sb.AppendLine($"Direction X\t{unitDir.X:0.####}");
+        sb.AppendLine($"Direction Y\t{unitDir.Y:0.####}");
+        sb.AppendLine($"Direction Z\t{unitDir.Z:0.####}");
+        sb.AppendLine("===============================");
+
+        return sb.ToString();
+    }
     #endregion
 
 }
@@ -1070,29 +1304,17 @@ public sealed class GeoArc : GeoCurves
         m_length = m_angle * m_radius;
     }
 
+    /// <summary>
+    /// Constructs a GeoArc from an AutoCAD Arc entity using its start, mid (at half length), and end points.
+    /// </summary>
+    /// <param name="arc">AutoCAD Arc entity</param>
+    /// <exception cref="ArgumentNullException">Thrown if arc is null</exception>
     public GeoArc(Arc arc)
+        : this(
+            arc != null ? arc.StartPoint : throw new ArgumentNullException(nameof(arc)),
+            arc.GetPointAtDist(arc.Length / 2.0),
+            arc.EndPoint)
     {
-        if (arc == null)
-            throw new ArgumentNullException(nameof(arc));
-
-        // Lấy các điểm đặc trưng
-        m_startpoint = arc.StartPoint;
-        m_endpoint = arc.EndPoint;
-        m_midPoint = arc.GetPointAtDist(arc.Length / 2.0);
-
-        // Dựng lại từ 3 điểm
-        var reconstructed = new GeoArc(m_startpoint, m_midPoint, m_endpoint);
-
-        // Gán toàn bộ dữ liệu hình học
-        m_centerPoint = reconstructed.CenterPoint;
-        m_normal = reconstructed.Normal;
-        m_plane = reconstructed.Plane;
-        m_radius = reconstructed.Radius;
-        m_angle = reconstructed.Angle;
-        m_length = reconstructed.Length;
-        m_startAngle = reconstructed.StartAngle;
-        m_endAngle = reconstructed.EndAngle;
-        m_isClosed = reconstructed.IsClosed;
     }
 
     #endregion
@@ -1411,61 +1633,87 @@ public sealed class GeoArc : GeoCurves
     /// </summary>
     /// <param name="other">The other arc to intersect with.</param>
     /// <returns>Intersection result with 0, 1 or 2 points.</returns>
-    private IntersectionResult IntersectWithArc(GeoArc other)
+    public IntersectionResult IntersectWithArc(GeoArc other)
     {
-        // --- Bước 1: Kiểm tra đồng phẳng một cách chặt chẽ ---
-        if (!this.Normal.IsParallelTo(other.Normal, new Tolerance(Constants.DefaultTolerance, Constants.DefaultTolerance)))
-        {
-            return IntersectionResult.None();
-        }
-        if (Math.Abs((this.CenterPoint - other.CenterPoint).DotProduct(other.Normal)) > Constants.DefaultTolerance)
-        {
-            return IntersectionResult.None();
-        }
+        Editor ed = Application.DocumentManager.MdiActiveDocument.Editor;
 
-        // --- Bước 2: Kiểm tra khoảng cách giữa hai tâm ---
-        var r1 = this.Radius;
-        var r2 = other.Radius;
-        var c1 = this.CenterPoint;
-        var c2 = other.CenterPoint;
-        var d_vec = c2 - c1;
-        double dist = d_vec.Length;
+        // 1. Kiểm tra đồng phẳng (normal cùng hướng và tâm cùng mặt phẳng)
+        double dotNorm = this.Normal.DotProduct(other.Normal);
+        double planeOffset = (this.CenterPoint - other.CenterPoint).DotProduct(this.Normal);
 
-        if (dist > r1 + r2 + Constants.DefaultTolerance || dist < Math.Abs(r1 - r2) - Constants.DefaultTolerance)
+        if (Math.Abs(planeOffset) > 1e-6 || Math.Abs(dotNorm - 1.0) > 1e-6)
         {
+            ed.WriteMessage("\n❌ Hai cung không đồng phẳng hoặc không cùng mặt.");
             return IntersectionResult.None();
         }
 
-        // --- Bước 3: Tính toán giao điểm theo hình học 2D ---
-        var a = (r1 * r1 - r2 * r2 + dist * dist) / (2 * dist);
-        var h = Math.Sqrt(Math.Max(0, r1 * r1 - a * a));
+        ed.WriteMessage("\n✅ Hai cung đồng phẳng.");
 
-        var p2 = c1 + a * d_vec.GetNormal();
-        var offset = d_vec.GetNormal().CrossProduct(this.Normal).GetNormal();
+        // 2. Đưa về hệ trục 2D của cung this
+        Vector3d xAxis = (this.StartPoint - this.CenterPoint).GetNormal();
+        Vector3d yAxis = this.Normal.CrossProduct(xAxis).GetNormal();
 
-        var i1 = p2 + h * offset;
-        var i2 = p2 - h * offset;
-
-        // --- Bước 4: Kiểm tra các điểm giao có nằm trên cả hai cung không ---
-        var results = new List<Point3d>();
-
-        // Giả sử IsPointOnArc là một hàm static hoặc bạn có hàm để kiểm tra
-        if (this.IsPointOnArc(i1) && other.IsPointOnArc(i1))
+        Point2d To2D(Point3d p)
         {
-            results.Add(i1);
+            Vector3d v = p - this.CenterPoint;
+            return new Point2d(v.DotProduct(xAxis), v.DotProduct(yAxis));
         }
 
-        // Chỉ kiểm tra điểm thứ 2 nếu nó khác điểm thứ 1
-        if (i2.DistanceTo(i1) > Constants.DefaultTolerance)
+        Point3d To3D(Point2d pt)
         {
-            if (this.IsPointOnArc(i2) && other.IsPointOnArc(i2))
+            return this.CenterPoint + xAxis * pt.X + yAxis * pt.Y;
+        }
+
+        Point2d c1 = new Point2d(0, 0); // Center cung this (sau khi quy về gốc)
+        Point2d c2 = To2D(other.CenterPoint);
+
+        double r1 = this.Radius;
+        double r2 = other.Radius;
+
+        Vector2d d = c2 - c1;
+        double D = d.Length;
+
+        if (D > r1 + r2 || D < Math.Abs(r1 - r2) || D < 1e-6)
+        {
+            ed.WriteMessage("\n❌ Hai vòng tròn không giao nhau.");
+            return IntersectionResult.None();
+        }
+
+        // 3. Giao hình học 2 đường tròn
+        double a = (r1 * r1 - r2 * r2 + D * D) / (2 * D);
+        double h = Math.Sqrt(r1 * r1 - a * a);
+        Point2d p0 = c1 + d.GetNormal() * a;
+
+        Vector2d offset = new Vector2d(-d.Y, d.X).GetNormal() * h;
+        Point2d ptA = p0 + offset;
+        Point2d ptB = p0 - offset;
+
+        List<Point3d> intersections = new List<Point3d>();
+
+        foreach (Point2d pt2D in new Point2d[] { ptA, ptB })
+        {
+            Point3d pt3D = To3D(pt2D);
+
+            if (!IsPointOnArc(this, pt3D))
             {
-                results.Add(i2);
+                ed.WriteMessage("\n⚠️ Giao điểm không nằm trên cung this.");
+                continue;
             }
+
+            if (!IsPointOnArc(other, pt3D))
+            {
+                ed.WriteMessage("\n⚠️ Giao điểm không nằm trên cung other.");
+                continue;
+            }
+
+            ed.WriteMessage("\n✅ Giao điểm hợp lệ: " + pt3D.ToString());
+            intersections.Add(pt3D);
         }
 
-        if (results.Count == 0) return IntersectionResult.None();
-        return IntersectionResult.Intersect(results);
+        if (intersections.Count == 0)
+            return IntersectionResult.None();
+
+        return IntersectionResult.Intersect(intersections);
     }
 
     /// <summary>
@@ -1543,7 +1791,58 @@ public sealed class GeoArc : GeoCurves
     #endregion
 
     #region Public Method
+    /// <summary>
+    /// Returns a formatted string containing geometric information of the GeoArc.
+    /// </summary>
+    public string GetInfoString()
+    {
+        var sb = new StringBuilder();
 
+        sb.AppendLine("===== GeoArc Geometry Info =====");
+
+        sb.AppendLine($"Start X\t{StartPoint.X:0.####}");
+        sb.AppendLine($"Start Y\t{StartPoint.Y:0.####}");
+        sb.AppendLine($"Start Z\t{StartPoint.Z:0.####}");
+
+        sb.AppendLine($"Center X\t{CenterPoint.X:0.####}");
+        sb.AppendLine($"Center Y\t{CenterPoint.Y:0.####}");
+        sb.AppendLine($"Center Z\t{CenterPoint.Z:0.####}");
+
+        sb.AppendLine($"End X\t{EndPoint.X:0.####}");
+        sb.AppendLine($"End Y\t{EndPoint.Y:0.####}");
+        sb.AppendLine($"End Z\t{EndPoint.Z:0.####}");
+
+        sb.AppendLine($"Radius\t{Radius:0.####}");
+
+        var xAxis = (StartPoint - CenterPoint).GetNormal();
+        var vEnd = (EndPoint - CenterPoint).GetNormal();
+
+        double startAngle = 0;
+        double endAngle = xAxis.GetAngleTo(vEnd, Normal);
+        double totalAngle = Angle;
+        double arcLength = Radius * Angle;
+        double area = 0.5 * Radius * Radius * Angle;
+
+        sb.AppendLine($"Start angle\t{startAngle * 180 / Math.PI:0.####}");
+        sb.AppendLine($"End angle\t{endAngle * 180 / Math.PI:0.####}");
+        sb.AppendLine($"Total angle\t{totalAngle * 180 / Math.PI:0.####}");
+        sb.AppendLine($"Arc length\t{arcLength:0.####}");
+        sb.AppendLine($"Area\t{area:0.####}");
+
+        sb.AppendLine($"Normal X\t{Normal.X:0.####}");
+        sb.AppendLine($"Normal Y\t{Normal.Y:0.####}");
+        sb.AppendLine($"Normal Z\t{Normal.Z:0.####}");
+
+        sb.AppendLine("===============================");
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Determines whether the given 3D point lies on the arc (not full circle).
+    /// </summary>
+    /// <param name="point">3D point to check</param>
+    /// <returns>True if point lies on the arc, false otherwise</returns>
     public bool IsPointOnArc(Point3d point)
     {
         // 1. Kiểm tra điểm có nằm trên đường tròn vô hạn không
@@ -1660,7 +1959,6 @@ public sealed class GeoPolycurve: GeoCurves
     public override Point3d EndPoint { get => _endPoint; protected set => _endPoint = value; }    // Last point of the polycurve
     public override bool IsClosed { get => m_isClosed; protected set => m_isClosed = value; }   // Whether the polycurve is closed
     public override double Length { get => _length; protected set => _length = value; }      // Total length of all segments
-
     public List<GeoCurves> Segments { get => segments; set => segments = value; }               // All curve segments
     public List<Point3d> Vertices { get => vertices; set => vertices = value; }               // Vertex points between segments
 
@@ -1728,6 +2026,65 @@ public sealed class GeoPolycurve: GeoCurves
         return (Segments.Count - 1, 1.0); // fallback to last segment
     }
 
+    /// <summary>
+    /// Checks if the angle formed by three consecutive 2D points (a → b → c) is convex.
+    /// </summaryprivate>
+    /// <param name="a">First point</param>
+    /// <param name="b">Middle point (vertex)</param>
+    /// <param name="c">Third point</param>
+    /// <returns>True if the angle is convex (counter-clockwise)</returns>
+    private bool IsConvex(Point2d a, Point2d b, Point2d c)
+    {
+        var ab = b - a;
+        var bc = c - b;
+        return ab.X * bc.Y - ab.Y * bc.X > 0;
+    }
+
+    /// <summary>
+    /// Checks whether a point lies inside the triangle defined by three 2D points.
+    /// </summary>
+    /// <param name="pt">The point to check</param>
+    /// <param name="a">Triangle vertex A</param>
+    /// <param name="b">Triangle vertex B</param>
+    /// <param name="c">Triangle vertex C</param>
+    /// <returns>True if the point is inside the triangle (including on edges)</returns>
+    private bool IsPointInTriangle(Point2d pt, Point2d a, Point2d b, Point2d c)
+    {
+        var v0 = c - a;
+        var v1 = b - a;
+        var v2 = pt - a;
+
+        double dot00 = v0.DotProduct(v0);
+        double dot01 = v0.DotProduct(v1);
+        double dot02 = v0.DotProduct(v2);
+        double dot11 = v1.DotProduct(v1);
+        double dot12 = v1.DotProduct(v2);
+
+        double denom = dot00 * dot11 - dot01 * dot01;
+        if (denom == 0) return false;
+
+        double u = (dot11 * dot02 - dot01 * dot12) / denom;
+        double v = (dot00 * dot12 - dot01 * dot02) / denom;
+
+        return u >= 0 && v >= 0 && (u + v) <= 1;
+    }
+
+    /// <summary>
+    /// Computes the signed area of a closed polygon defined by a list of 2D points.
+    /// </summary>
+    /// <param name="pts">List of points defining the polygon (must be closed or treated as loop)</param>
+    /// <returns>Signed area (positive if counter-clockwise, negative if clockwise)</returns>
+    private double GetSignedArea(List<Point2d> pts)
+    {
+        double area = 0;
+        for (int i = 0; i < pts.Count; i++)
+        {
+            var p1 = pts[i];
+            var p2 = pts[(i + 1) % pts.Count];
+            area += (p1.X * p2.Y - p2.X * p1.Y);
+        }
+        return 0.5 * area;
+    }
     #endregion
 
     #region Override
@@ -2182,13 +2539,21 @@ public sealed class GeoPolycurve: GeoCurves
                 segments.Add(new GeoLine(pts[i], pts[i + 1]));
         }
 
+        // 👇 Thêm đoạn này để xử lý polyline đóng
+        bool isClosed = polyline3d.Closed;
+        if (isClosed && pts.Last().DistanceTo(pts.First()) > Constants.DefaultTolerance)
+        {
+            segments.Add(new GeoLine(pts.Last(), pts.First()));
+        }
+
         Segments = segments;
         Vertices = pts;
         _startPoint = pts.First();
         _endPoint = pts.Last();
         _length = segments.Sum(s => s.Length);
-        m_isClosed = _startPoint.DistanceTo(_endPoint) < Constants.DefaultTolerance;
+        m_isClosed = isClosed;
     }
+
 
     #endregion
 
@@ -2285,6 +2650,145 @@ public sealed class GeoPolycurve: GeoCurves
         return result;
     }
 
+    /// <summary>
+    /// Returns basic information about the GeoPolycurve structure.
+    /// </summary>
+    public string PrintInfo()
+    {
+        var sb = new StringBuilder();
+
+        sb.AppendLine("===== GeoPolycurve Info =====");
+        sb.AppendLine($"IsClosed: {IsClosed}");
+        sb.AppendLine($"Total Length: {Length:F4}");
+        sb.AppendLine($"Vertex Count: {Vertices.Count}");
+        sb.AppendLine($"Segment Count: {Segments.Count}");
+
+        for (int i = 0; i < Vertices.Count; i++)
+        {
+            var pt = Vertices[i];
+            sb.AppendLine($"  Vertex {i + 1}: ({pt.X:F4}, {pt.Y:F4}, {pt.Z:F4})");
+        }
+
+        for (int i = 0; i < Segments.Count; i++)
+        {
+            var seg = Segments[i];
+            sb.AppendLine($"  Segment {i + 1}: {seg.GetType().Name}, Length = {seg.Length:F4}");
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Performs Ear Clipping triangulation on the GeoPolycurve if it is closed.
+    /// </summary>
+    public List<GeoTriangle> Triangulate()
+    {
+        var triangles = new List<GeoTriangle>();
+
+        if (!IsClosed || Vertices.Count < 3)
+            return triangles;
+
+        // Step 1: Tạo mặt phẳng chiếu từ 3 điểm đầu tiên
+        var plane = new GeoPlane(Vertices[0], Vertices[1], Vertices[2]);
+        var projected = Vertices.Select(p => new { Original = p, Flat = plane.ProjectPointTo2D(p) }).ToList();
+
+        var flatPoints = projected.Select(p => p.Flat).ToList();
+        var originals = projected.Select(p => p.Original).ToList();
+
+        var indices = Enumerable.Range(0, flatPoints.Count).ToList();
+
+        // Step 2: Đảm bảo polygon theo chiều CCW
+        if (GetSignedArea(flatPoints) < 0)
+            indices.Reverse();
+
+        int loopGuard = 0; // để tránh vòng lặp vô hạn
+
+        // Step 3: Thuật toán Ear Clipping
+        while (indices.Count > 3 && loopGuard < 1000)
+        {
+            bool earFound = false;
+
+            for (int i = 0; i < indices.Count; i++)
+            {
+                int i0 = indices[(i - 1 + indices.Count) % indices.Count];
+                int i1 = indices[i];
+                int i2 = indices[(i + 1) % indices.Count];
+
+                var a = flatPoints[i0];
+                var b = flatPoints[i1];
+                var c = flatPoints[i2];
+
+                if (!IsConvex(a, b, c))
+                    continue;
+
+                // Kiểm tra có điểm nào nằm trong tam giác không
+                bool anyInside = false;
+                for (int j = 0; j < indices.Count; j++)
+                {
+                    if (indices[j] == i0 || indices[j] == i1 || indices[j] == i2)
+                        continue;
+
+                    if (IsPointInTriangle(flatPoints[indices[j]], a, b, c))
+                    {
+                        anyInside = true;
+                        break;
+                    }
+                }
+
+                if (!anyInside)
+                {
+                    // ✅ Đây là một tai, cắt tam giác
+                    triangles.Add(new GeoTriangle(
+                        originals[i0],
+                        originals[i1],
+                        originals[i2]
+                    ));
+                    indices.RemoveAt(i);
+                    earFound = true;
+                    break;
+                }
+            }
+
+            if (!earFound)
+                break;
+
+            loopGuard++;
+        }
+
+        // Còn lại 1 tam giác cuối
+        if (indices.Count == 3)
+        {
+            triangles.Add(new GeoTriangle(
+                originals[indices[0]],
+                originals[indices[1]],
+                originals[indices[2]]
+            ));
+        }
+
+        return triangles;
+    }
+
+    /// <summary>
+    /// Computes the minimum distance between a GeoLine and any GeoLine segment in the GeoPolycurve.
+    /// </summary>
+    public double DistanceTo(GeoLine line)
+    {
+        double minDist = double.MaxValue;
+
+        foreach (var segment in Segments.OfType<GeoLine>())
+        {
+            double dist = segment.DistanceTo(line);
+            if (dist < minDist)
+                minDist = dist;
+
+            // Early return nếu đã chạm
+            if (minDist < Constants.DefaultTolerance)
+                return 0;
+        }
+
+        return minDist;
+    }
+
     #endregion
 }
 
@@ -2348,6 +2852,13 @@ public class GeoTriangle
 
         return null;
     }
+
+    /// <summary>
+    /// Constructs a GeoTriangle from three 3D points.
+    /// </summary>
+    /// <param name="p1">First vertex of the triangle</param>
+    /// <param name="p2">Second vertex of the triangle</param>
+    /// <param name="p3">Third vertex of the triangle</param>
     public GeoTriangle(Point3d p1, Point3d p2, Point3d p3)
     {
         this._p1 = p1;
@@ -2359,6 +2870,10 @@ public class GeoTriangle
 
     #region Methods
 
+    /// <summary>
+    /// Computes the unit normal vector of the triangle (right-hand rule based on vertex order).
+    /// </summary>
+    /// <returns>Normalized normal vector</returns>
     public Vector3d GetNormal()
     {
         Vector3d v1 = _p2 - _p1;
@@ -2430,10 +2945,6 @@ public class GeoTriangle
         return (u >= 0) && (v >= 0) && (u + v <= 1);
     }
 
-    /// <summary>
-    /// Tìm giao tuyến giữa mặt tam giác và một đường thẳng.
-    /// </summary>
-    /// <returns>Một GeoLine đại diện cho đoạn giao, hoặc null nếu không giao.</returns>
     public GeoCurves IntersectWith(GeoLine line)
     {
         Vector3d edge1 = this._p2 - this._p1;
@@ -2511,6 +3022,21 @@ public class GeoTriangle
 
         return null;
     }
+
+    public bool IsCoplanarWith(GeoTriangle other)
+    {
+        var n1 = this.GetNormal();
+        var n2 = other.GetNormal();
+
+        // Bước 1: Vector pháp tuyến phải song song
+        if (!n1.IsParallelTo(n2, new Tolerance(Constants.DefaultTolerance, Constants.DefaultTolerance)))
+            return false;
+
+        // Bước 2: Khoảng cách từ 1 điểm tam giác này đến mặt phẳng tam giác kia ≈ 0
+        double distance = (other.P1 - this.P1).DotProduct(n1);
+        return Math.Abs(distance) < Constants.DefaultTolerance;
+    }
+
     public List<GeoCurves> IntersectWith(GeoArc arc)
     {
         var results = new List<GeoCurves>();
@@ -2600,5 +3126,139 @@ public class GeoTriangle
 
         return results;
     }
+
+    public bool IsParallelTo(GeoTriangle other)
+    {
+        if (other == null) return false;
+
+        Vector3d normal1 = this.GetNormal();
+        Vector3d normal2 = other.GetNormal();
+
+        // Nếu tích có hướng bằng 0 thì song song hoặc trùng
+        return normal1.IsParallelTo(normal2, new Tolerance(Constants.DefaultTolerance, Constants.DefaultTolerance));
+    }
+
+    public GeoLine GetIntersectionLineWith(GeoTriangle other)
+    {
+        if (this.IsCoplanarWith(other) || this.IsParallelTo(other))
+            return null;
+
+        Vector3d n1 = this.GetNormal();
+        Vector3d n2 = other.GetNormal();
+        Vector3d direction = n1.CrossProduct(n2).GetNormal();
+
+        // Mặt phẳng 1: n1 . (P - A1) = 0 → n1.X*x + n1.Y*y + n1.Z*z = d1
+        // Mặt phẳng 2: n2 . (P - A2) = 0 → n2.X*x + n2.Y*y + n2.Z*z = d2
+
+        double d1 = n1.DotProduct(this.P1 - Point3d.Origin);
+        double d2 = n2.DotProduct(other.P1 - Point3d.Origin);
+
+        // Chọn 1 biến tự do (ưu tiên z nếu direction.Z ≠ 0)
+        double x, y, z;
+        if (Math.Abs(direction.Z) > Constants.DefaultTolerance)
+        {
+            z = 0; // fix z
+            var a1 = n1.X;
+            var b1 = n1.Y;
+            var c1 = n1.Z;
+            var a2 = n2.X;
+            var b2 = n2.Y;
+            var c2 = n2.Z;
+
+            double denom = a1 * b2 - a2 * b1;
+            if (Math.Abs(denom) < Constants.DefaultTolerance)
+                return null;
+
+            x = (d1 * b2 - d2 * b1) / denom;
+            y = (a1 * d2 - a2 * d1) / denom;
+        }
+        else if (Math.Abs(direction.Y) > Constants.DefaultTolerance)
+        {
+            y = 0;
+            double a1 = n1.X, c1 = n1.Z;
+            double a2 = n2.X, c2 = n2.Z;
+
+            double denom = a1 * c2 - a2 * c1;
+            if (Math.Abs(denom) < Constants.DefaultTolerance)
+                return null;
+
+            x = (d1 * c2 - d2 * c1) / denom;
+            z = (a1 * d2 - a2 * d1) / denom;
+        }
+        else
+        {
+            x = 0;
+            double b1 = n1.Y, c1 = n1.Z;
+            double b2 = n2.Y, c2 = n2.Z;
+
+            double denom = b1 * c2 - b2 * c1;
+            if (Math.Abs(denom) < Constants.DefaultTolerance)
+                return null;
+
+            y = (d1 * c2 - d2 * c1) / denom;
+            z = (b1 * d2 - b2 * d1) / denom;
+        }
+
+        var basePoint = new Point3d(x, y, z);
+
+        // Chiếu tất cả đỉnh của 2 tam giác lên direction vector
+        var allPoints = this.Vertices.Concat(other.Vertices).ToList();
+        var projections = allPoints.Select(pt => (pt - basePoint).DotProduct(direction)).ToList();
+
+        double tMin = projections.Min();
+        double tMax = projections.Max();
+
+        var p1 = basePoint + tMin * direction;
+        var p2 = basePoint + tMax * direction;
+
+        return new GeoLine(p1, p2);
+    }
+
+    public GeoLine GetIntersection(GeoTriangle other)
+    {
+        // Bước 1: Tìm đường giao tuyến giữa 2 mặt phẳng tam giác
+        GeoLine intersectLine = this.GetIntersectionLineWith(other);
+        if (intersectLine == null)
+            return null;
+
+        // Bước 2: Tìm đoạn cắt với tam giác thứ nhất
+        var segment1 = this.IntersectWith(intersectLine) as GeoLine;
+        if (segment1 == null)
+            return null;
+
+        // Bước 3: Tìm đoạn cắt với tam giác thứ hai
+        var segment2 = other.IntersectWith(intersectLine) as GeoLine;
+        if (segment2 == null)
+            return null;
+
+        // Bước 4: Tìm đoạn giao nhau giữa 2 đoạn con (overlap)
+        var overlapResult = segment1.IntersectWith(segment2);
+        if (overlapResult.Type == IntersectionResult.IntersectType.Overlap &&
+            overlapResult.OverlapSegments != null && overlapResult.OverlapSegments.Count > 0)
+        {
+            return overlapResult.OverlapSegments[0] as GeoLine;
+        }
+
+        return null;
+    }
+
+    public Entity[] Test()
+    {
+        var pts = new Point3dCollection
+    {
+        _p1,
+        _p2,
+        _p3,
+        _p1 // Đóng kín tam giác
+    };
+
+        var polyline = new Polyline3d(Poly3dType.SimplePoly, pts, true)
+        {
+            ColorIndex = 2 // Màu tùy chọn, ví dụ: xanh lá
+        };
+
+        return new Entity[] { polyline };
+    }
+
     #endregion
 }

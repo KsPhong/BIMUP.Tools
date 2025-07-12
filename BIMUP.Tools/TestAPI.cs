@@ -18,7 +18,6 @@ namespace BIMUP.Core
     public class TestAPI
     {
 
-
         #region Test GeoPlane
         [CommandMethod("TestGeoPlane")]
         public void TestGeoPlane()
@@ -163,6 +162,33 @@ namespace BIMUP.Core
         #endregion
 
         #region GeoLine
+
+        [CommandMethod("Test_GeoLine_Info")]
+        public void Test_GeoLine_Info()
+        {
+            var doc = Application.DocumentManager.MdiActiveDocument;
+            var ed = doc.Editor;
+            var db = doc.Database;
+
+            var res = ed.GetEntity("\n👉 Chọn một đối tượng LINE:");
+            if (res.Status != PromptStatus.OK) return;
+
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                var line = tr.GetObject(res.ObjectId, OpenMode.ForRead) as Line;
+                if (line == null)
+                {
+                    ed.WriteMessage("\n❌ Đối tượng không phải LINE.");
+                    return;
+                }
+
+                var geoLine = new GeoLine(line.StartPoint, line.EndPoint);
+                ed.WriteMessage(geoLine.GetInfoString());
+
+                tr.Commit();
+            }
+        }
+
         [CommandMethod("TestGeoLine")]
         public void TestGeoLine()
         {
@@ -614,25 +640,14 @@ namespace BIMUP.Core
                         return;
                     }
 
-                    // Log thông tin Line
-                    ed.WriteMessage($"\n🔹 LINE: Start = {acadLine.StartPoint}, End = {acadLine.EndPoint}");
-                    ed.WriteMessage($"\n🔹 Direction: {acadLine.Delta}");
-
-                    // Log thông tin Arc
-                    ed.WriteMessage($"\n🔸 ARC: Center = {acadArc.Center}, Radius = {acadArc.Radius:0.####}");
-                    ed.WriteMessage($"\n🔸 Start = {acadArc.StartPoint}, End = {acadArc.EndPoint}");
-                    ed.WriteMessage($"\n🔸 Normal = {acadArc.Normal}");
-
                     var geoLine = new GeoLine(acadLine);
                     var geoArc = new GeoArc(acadArc);
 
                     // Kiểm tra giao điểm
-                    ed.WriteMessage("\n🔍 Tiến hành kiểm tra giao nhau...");
                     IntersectionResult intersection = geoLine.IntersectWith(geoArc);
 
                     if (intersection.Type == IntersectionResult.IntersectType.Intersect)
                     {
-                        ed.WriteMessage($"\n✅ Tìm thấy {intersection.Points.Count} giao điểm!");
 
                         var blockTable = tr.GetObject(db.BlockTableId, OpenMode.ForRead) as BlockTable;
                         var modelSpace = tr.GetObject(blockTable[BlockTableRecord.ModelSpace], OpenMode.ForWrite) as BlockTableRecord;
@@ -640,8 +655,6 @@ namespace BIMUP.Core
                         int i = 1;
                         foreach (var pt in intersection.Points)
                         {
-                            ed.WriteMessage($"\n   🔸 Giao điểm {i++}: {pt}");
-
                             var circle = new Circle()
                             {
                                 Center = pt,
@@ -675,299 +688,191 @@ namespace BIMUP.Core
 
         #region GeoArc
 
-
         [CommandMethod("Test_GeoArc_Info")]
         public void Test_GeoArc_Info()
         {
             var doc = Application.DocumentManager.MdiActiveDocument;
-            var db = doc.Database;
             var ed = doc.Editor;
+            var db = doc.Database;
 
-            var result = ed.GetEntity("\n👉 Chọn một đối tượng ARC:");
-            if (result.Status != PromptStatus.OK) return;
+            var res = ed.GetEntity("\n👉 Chọn một đối tượng ARC:");
+            if (res.Status != PromptStatus.OK) return;
 
             using (var tr = db.TransactionManager.StartTransaction())
             {
-                var arc = tr.GetObject(result.ObjectId, OpenMode.ForRead) as Arc;
+                var arc = tr.GetObject(res.ObjectId, OpenMode.ForRead) as Arc;
                 if (arc == null)
                 {
                     ed.WriteMessage("\n❌ Đối tượng không phải ARC.");
                     return;
                 }
 
-                var ptStart = arc.StartPoint;
-                var ptEnd = arc.EndPoint;
-                var ptMid = arc.GetPointAtParameter((arc.StartParam + arc.EndParam) / 2.0);
-
-                GeoArc geo;
                 try
                 {
-                    geo = new GeoArc(ptStart, ptMid, ptEnd);
+                    var geoArc = new GeoArc(arc); // ✅ dùng constructor gốc
+                    ed.WriteMessage(geoArc.GetInfoString());
                 }
                 catch (System.Exception ex)
                 {
-                    ed.WriteMessage($"\n❌ Không thể dựng GeoArc từ 3 điểm: {ex.Message}");
-                    return;
+                    ed.WriteMessage($"\n❌ Lỗi tạo GeoArc: {ex.Message}");
                 }
-
-                // In thông tin dạng bảng Geometry
-                ed.WriteMessage("\n===== GeoArc Geometry Info =====");
-                ed.WriteMessage($"\nStart X\t{geo.StartPoint.X:0.####}");
-                ed.WriteMessage($"\nStart Y\t{geo.StartPoint.Y:0.####}");
-                ed.WriteMessage($"\nStart Z\t{geo.StartPoint.Z:0.####}");
-
-                ed.WriteMessage($"\nCenter X\t{geo.CenterPoint.X:0.####}");
-                ed.WriteMessage($"\nCenter Y\t{geo.CenterPoint.Y:0.####}");
-                ed.WriteMessage($"\nCenter Z\t{geo.CenterPoint.Z:0.####}");
-
-                ed.WriteMessage($"\nEnd X\t{geo.EndPoint.X:0.####}");
-                ed.WriteMessage($"\nEnd Y\t{geo.EndPoint.Y:0.####}");
-                ed.WriteMessage($"\nEnd Z\t{geo.EndPoint.Z:0.####}");
-
-                ed.WriteMessage($"\nRadius\t{geo.Radius:0.####}");
-
-                var xAxis = (geo.StartPoint - geo.CenterPoint).GetNormal();
-                var vStart = (geo.StartPoint - geo.CenterPoint).GetNormal();
-                var vEnd = (geo.EndPoint - geo.CenterPoint).GetNormal();
-                double startAngle = 0;
-                double endAngle = xAxis.GetAngleTo(vEnd, geo.Normal);
-                double totalAngle = geo.Angle;
-                double arcLength = geo.Radius * geo.Angle;
-                double area = 0.5 * geo.Radius * geo.Radius * geo.Angle;
-
-                ed.WriteMessage($"\nStart angle\t{startAngle * 180 / Math.PI:0.####}");
-                ed.WriteMessage($"\nEnd angle\t{endAngle * 180 / Math.PI:0.####}");
-                ed.WriteMessage($"\nTotal angle\t{totalAngle * 180 / Math.PI:0.####}");
-                ed.WriteMessage($"\nArc length\t{arcLength:0.####}");
-                ed.WriteMessage($"\nArea\t{area:0.####}");
-
-                ed.WriteMessage($"\nNormal X\t{geo.Normal.X:0.####}");
-                ed.WriteMessage($"\nNormal Y\t{geo.Normal.Y:0.####}");
-                ed.WriteMessage($"\nNormal Z\t{geo.Normal.Z:0.####}");
-
-                ed.WriteMessage("\n===============================");
 
                 tr.Commit();
             }
         }
 
-        [CommandMethod("Test_GeoArc_RebuildFrom3Points")]
-        public void Test_GeoArc_RebuildFrom3Points()
+        [CommandMethod("Test_GeoArc_From3Point")]
+        public void Test_GeoArc_From3Point()
         {
             var doc = Application.DocumentManager.MdiActiveDocument;
             var db = doc.Database;
             var ed = doc.Editor;
 
-            // B1: Chọn một đối tượng ARC
-            var result = ed.GetEntity("\n👉 Chọn một đối tượng ARC:");
-            if (result.Status != PromptStatus.OK) return;
-
-            using (var tr = db.TransactionManager.StartTransaction())
+            try
             {
-                var arc = tr.GetObject(result.ObjectId, OpenMode.ForRead) as Arc;
-                if (arc == null)
+                // 1. Pick 3 điểm
+                PromptPointResult res1 = ed.GetPoint("\nChọn điểm bắt đầu cung: ");
+                if (res1.Status != PromptStatus.OK) return;
+
+                PromptPointResult res2 = ed.GetPoint("\nChọn điểm giữa cung: ");
+                if (res2.Status != PromptStatus.OK) return;
+
+                PromptPointResult res3 = ed.GetPoint("\nChọn điểm kết thúc cung: ");
+                if (res3.Status != PromptStatus.OK) return;
+
+                Point3d p1 = res1.Value;
+                Point3d p2 = res2.Value;
+                Point3d p3 = res3.Value;
+
+                // 2. Dựng GeoArc từ 3 điểm
+                GeoArc arc = new GeoArc(p1, p2, p3);
+
+                // 3. Gọi Test() để lấy Arc entity
+                Entity[] entities = arc.Test();
+                if (entities.Length == 0) return;
+
+                // 4. Ghi ra model space
+                using (Transaction tr = db.TransactionManager.StartTransaction())
                 {
-                    ed.WriteMessage("\n❌ Đối tượng không phải ARC.");
-                    return;
+                    BlockTableRecord btr = (BlockTableRecord)tr.GetObject(
+                        db.CurrentSpaceId, OpenMode.ForWrite);
+
+                    foreach (Entity ent in entities)
+                    {
+                        btr.AppendEntity(ent);
+                        tr.AddNewlyCreatedDBObject(ent, true);
+                    }
+
+                    tr.Commit();
                 }
-
-                // B2: Lấy 3 điểm đặc trưng
-                var ptStart = arc.StartPoint;
-                var ptEnd = arc.EndPoint;
-                var ptMid = arc.GetPointAtParameter((arc.StartParam + arc.EndParam) / 2.0);
-
-                // B3: Dựng GeoArc từ 3 điểm đó
-                GeoArc geo;
-                try
-                {
-                    geo = new GeoArc(ptStart, ptMid, ptEnd);
-                }
-                catch (System.Exception ex)
-                {
-                    ed.WriteMessage($"\n❌ Không thể dựng GeoArc từ 3 điểm: {ex.Message}");
-                    return;
-                }
-
-                // B4: Dựng Arc mới từ GeoArc bằng hệ tọa độ mặt phẳng chuẩn
-                var xAxis = (geo.StartPoint - geo.CenterPoint).GetNormal();
-                var yAxis = geo.Normal.CrossProduct(xAxis).GetNormal();
-
-                var vStart = (geo.StartPoint - geo.CenterPoint).GetNormal();
-                var vEnd = (geo.EndPoint - geo.CenterPoint).GetNormal();
-                var xRef = xAxis;
-
-                double startAngle = xRef.GetAngleTo(vStart, geo.Normal);
-                double endAngle = xRef.GetAngleTo(vEnd, geo.Normal);
-
-                var rebuiltArc = new Arc(
-                    geo.CenterPoint,
-                    geo.Normal,
-                    geo.Radius,
-                    startAngle,
-                    endAngle
-                )
-                {
-                    ColorIndex = 5
-                };
-
-                // B5: Vẽ kết quả
-                var btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
-                btr.AppendEntity(rebuiltArc); tr.AddNewlyCreatedDBObject(rebuiltArc, true);
-
-                // Vẽ lại các điểm để đối chiếu
-                var c1 = new Circle(ptStart, geo.Normal, 0.4) { ColorIndex = 1 }; // đỏ
-                var c2 = new Circle(ptMid, geo.Normal, 0.4) { ColorIndex = 3 };   // xanh dương
-                var c3 = new Circle(ptEnd, geo.Normal, 0.4) { ColorIndex = 2 };   // xanh lá
-
-                btr.AppendEntity(c1); tr.AddNewlyCreatedDBObject(c1, true);
-                btr.AppendEntity(c2); tr.AddNewlyCreatedDBObject(c2, true);
-                btr.AppendEntity(c3); tr.AddNewlyCreatedDBObject(c3, true);
-
-                tr.Commit();
-
-                ed.WriteMessage("\n✅ Đã dựng lại GeoArc từ 3 điểm của ARC gốc và vẽ lại.");
+            }
+            catch (System.Exception ex)
+            {
+                ed.WriteMessage($"\nLỗi: {ex.Message}");
             }
         }
 
-        [CommandMethod("Test_GeoArc_3PointsWithCircle")]
-        public void Test_GeoArc_3PointsWithCircle()
+        [CommandMethod("Test_GeoArc_Arc")]
+        public void Test_GeoArc_Arc()
         {
             var doc = Application.DocumentManager.MdiActiveDocument;
             var db = doc.Database;
             var ed = doc.Editor;
 
-            // Chọn một đối tượng ARC
-            var result = ed.GetEntity("\n👉 Chọn một đối tượng ARC để kiểm tra 3 điểm đặc trưng:");
-            if (result.Status != PromptStatus.OK) return;
-
-            using (var tr = db.TransactionManager.StartTransaction())
+            try
             {
-                var arc = tr.GetObject(result.ObjectId, OpenMode.ForRead) as Arc;
-                if (arc == null)
+                // 1. Cho người dùng chọn một đối tượng Arc
+                var res = ed.GetEntity("\nChọn cung ARC: ");
+                if (res.Status != PromptStatus.OK) return;
+
+                using (var tr = db.TransactionManager.StartTransaction())
                 {
-                    ed.WriteMessage("\n❌ Đối tượng không phải ARC.");
-                    return;
+                    var arc = tr.GetObject(res.ObjectId, OpenMode.ForRead) as Arc;
+                    if (arc == null)
+                    {
+                        ed.WriteMessage("\nĐối tượng không phải là Arc.");
+                        return;
+                    }
+
+                    // 2. Lấy 3 điểm từ Arc
+                    Point3d start = arc.StartPoint;
+                    Point3d mid = arc.GetPointAtDist(arc.Length / 2.0);
+                    Point3d end = arc.EndPoint;
+
+                    // 3. Dựng GeoArc từ 3 điểm
+                    GeoArc geoArc = new GeoArc(start, mid, end);
+
+                    // 4. Test → tạo entity để vẽ
+                    Entity[] ents = geoArc.Test();
+                    if (ents.Length == 0) return;
+
+                    // 5. Ghi vào Model Space
+                    BlockTableRecord btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
+                    foreach (var ent in ents)
+                    {
+                        btr.AppendEntity(ent);
+                        tr.AddNewlyCreatedDBObject(ent, true);
+                    }
+
+                    tr.Commit();
                 }
-
-                // Tạo GeoArc từ Arc
-                var geo = new GeoArc(arc);
-
-                // Tạo lại Arc từ GeoArc để xác nhận hình học đúng
-                var newArc = new Arc(
-                    geo.CenterPoint,
-                    geo.Normal,
-                    geo.Radius,
-                    geo.StartAngle,
-                    geo.EndAngle
-                )
-                {
-                    ColorIndex = 5 // Tím nhạt - phân biệt với Arc gốc
-                };
-
-                // Vẽ 3 điểm đặc trưng bằng Circle
-                var cStart = new Circle(geo.StartPoint, geo.Normal, 0.4) { ColorIndex = 1 }; // Đỏ
-                var cMid = new Circle(geo.MidPoint, geo.Normal, 0.4) { ColorIndex = 3 };   // Xanh dương
-                var cEnd = new Circle(geo.EndPoint, geo.Normal, 0.4) { ColorIndex = 2 };   // Xanh lá
-
-                // Ghi vào bản vẽ
-                var btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
-                btr.AppendEntity(newArc); tr.AddNewlyCreatedDBObject(newArc, true);
-                btr.AppendEntity(cStart); tr.AddNewlyCreatedDBObject(cStart, true);
-                btr.AppendEntity(cMid); tr.AddNewlyCreatedDBObject(cMid, true);
-                btr.AppendEntity(cEnd); tr.AddNewlyCreatedDBObject(cEnd, true);
-
-                tr.Commit();
-
-                ed.WriteMessage("\n✅ Đã vẽ cung mới và 3 điểm đặc trưng của GeoArc.");
-                ed.WriteMessage($"\n🔴 Start: ({geo.StartPoint.X:F2}, {geo.StartPoint.Y:F2}, {geo.StartPoint.Z:F2})");
-                ed.WriteMessage($"\n🔵 Mid:   ({geo.MidPoint.X:F2}, {geo.MidPoint.Y:F2}, {geo.MidPoint.Z:F2})");
-                ed.WriteMessage($"\n🟢 End:   ({geo.EndPoint.X:F2}, {geo.EndPoint.Y:F2}, {geo.EndPoint.Z:F2})");
+            }
+            catch (System.Exception ex)
+            {
+                ed.WriteMessage($"\nLỗi: {ex.Message}");
             }
         }
 
-        [CommandMethod("Test_GeoArc_ConstructorFromArc")]
-        public void Test_GeoArc_ConstructorFromArc()
+        [CommandMethod("Test_GeoArc_CoordinateSystemAtParam")]
+        public void Test_GeoArc_CoordinateSystemAtParam()
         {
             var doc = Application.DocumentManager.MdiActiveDocument;
             var db = doc.Database;
             var ed = doc.Editor;
 
-            // Bước 1: Yêu cầu người dùng chọn 1 Arc
-            var result = ed.GetEntity("\n👉 Chọn một đối tượng ARC:");
-            if (result.Status != PromptStatus.OK) return;
-
-            using (var tr = db.TransactionManager.StartTransaction())
+            try
             {
-                var arc = tr.GetObject(result.ObjectId, OpenMode.ForRead) as Arc;
-                if (arc == null)
+                // B1: Chọn một Arc
+                var arcRes = ed.GetEntity("\nChọn cung ARC: ");
+                if (arcRes.Status != PromptStatus.OK) return;
+
+                // B2: Nhập tham số t ∈ [0, 1]
+                var tRes = ed.GetDouble("\nNhập tham số t (0.0 ~ 1.0): ");
+                if (tRes.Status != PromptStatus.OK) return;
+
+                double t = Math.Max(0.0, Math.Min(1.0, tRes.Value)); // Clamp [0,1]
+
+                using (var tr = db.TransactionManager.StartTransaction())
                 {
-                    ed.WriteMessage("\n❌ Đối tượng không phải ARC.");
-                    return;
+                    var arc = tr.GetObject(arcRes.ObjectId, OpenMode.ForRead) as Arc;
+                    if (arc == null)
+                    {
+                        ed.WriteMessage("\nKhông phải là Arc.");
+                        return;
+                    }
+
+                    // B3: Dựng GeoArc từ 3 điểm
+                    var geoArc = new GeoArc(arc.StartPoint, arc.GetPointAtDist(arc.Length / 2.0), arc.EndPoint);
+
+                    // B4: Lấy hệ tọa độ tại tham số t
+                    GeoCoordinateSystem frame = geoArc.CoordinateSystemAtParameter(t);
+
+                    // B5: Dùng .Test() để tạo các Line trục
+                    var lines = frame.Test();
+
+                    var btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
+                    foreach (var ln in lines)
+                    {
+                        btr.AppendEntity(ln);
+                        tr.AddNewlyCreatedDBObject(ln, true);
+                    }
+
+                    tr.Commit();
                 }
-
-                // Bước 2: Tạo GeoArc từ Arc
-                GeoArc geo = new GeoArc(arc);
-
-                // Bước 3: Tạo Arc mới từ GeoArc để vẽ kiểm tra
-                var rebuilt = new Arc(
-                    geo.CenterPoint,
-                    geo.Normal,
-                    geo.Radius,
-                    geo.StartAngle,
-                    geo.EndAngle
-                )
-                {
-                    ColorIndex = 2 // Xanh lá: để phân biệt với Arc gốc
-                };
-
-                // Bước 4: Ghi ra bản vẽ
-                var btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
-                btr.AppendEntity(rebuilt);
-                tr.AddNewlyCreatedDBObject(rebuilt, true);
-
-                // Bước 5: Vẽ 3 điểm đặc trưng để xác minh
-                var p1 = new DBPoint(geo.StartPoint) { ColorIndex = 1 }; // đỏ
-                var p2 = new DBPoint(geo.MidPoint) { ColorIndex = 3 };   // xanh dương
-                var p3 = new DBPoint(geo.EndPoint) { ColorIndex = 1 };   // đỏ
-                btr.AppendEntity(p1); tr.AddNewlyCreatedDBObject(p1, true);
-                btr.AppendEntity(p2); tr.AddNewlyCreatedDBObject(p2, true);
-                btr.AppendEntity(p3); tr.AddNewlyCreatedDBObject(p3, true);
-
-                tr.Commit();
-                ed.WriteMessage("\n✅ Đã test GeoArc(Arc) constructor và vẽ kết quả.");
             }
-        }
-
-        [CommandMethod("Test_GeoArc_PointAtParameter")]
-        public void Test_GeoArc_PointAtParameter()
-        {
-            var doc = Application.DocumentManager.MdiActiveDocument;       
-            if (doc == null) return;
-            var db = doc.Database;
-            var ed = doc.Editor;
-
-            var ids = SelectUtilities.SelectObjects("ARC", "\n👉 Chọn 1 ARC để test PointAtParameter:");
-            if (ids.Count == 0) return;
-
-            using (var tr = db.TransactionManager.StartTransaction())
+            catch (System.Exception ex)
             {
-                var arc = tr.GetObject(ids[0], OpenMode.ForRead) as Arc;
-                if (arc == null) return;
-
-                var geo = new GeoArc(arc);
-                var btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
-
-                var tValues = new[] { 0.0, 0.25, 0.5, 0.75, 1.0 };
-                foreach (var t in tValues)
-                {
-                    var pt = geo.PointAtParameter(t);
-                    var circle = new Circle(pt, Vector3d.ZAxis, 1.0) { ColorIndex = 2 };
-                    btr.AppendEntity(circle);
-                    tr.AddNewlyCreatedDBObject(circle, true);
-                }
-
-                tr.Commit();
-                ed.WriteMessage("\n✅ Đã tạo các vòng tròn tại các tham số t trên GeoArc.");
+                ed.WriteMessage($"\nLỗi: {ex.Message}");
             }
         }
 
@@ -978,481 +883,286 @@ namespace BIMUP.Core
             var db = doc.Database;
             var ed = doc.Editor;
 
-            var arcIds = SelectUtilities.SelectObjects("ARC", "\n👉 Chọn 1 ARC:");
-            var circleIds = SelectUtilities.SelectObjects("CIRCLE", "\n👉 Chọn 1 CIRCLE:");
-
-            if (arcIds.Count == 0 || circleIds.Count == 0) return;
-
-            using (var tr = db.TransactionManager.StartTransaction())
-            {
-                var arc = tr.GetObject(arcIds[0], OpenMode.ForRead) as Arc;
-                var circle = tr.GetObject(circleIds[0], OpenMode.ForRead) as Circle;
-                if (arc == null || circle == null)
-                {
-                    ed.WriteMessage("\n❌ Không hợp lệ.");
-                    return;
-                }
-
-                var geo = new GeoArc(arc);
-                var t = geo.ParameterAtPoint(circle.Center);
-                var pt = geo.PointAtParameter(t);
-
-                ed.WriteMessage($"\n📍 ParameterAtPoint(center) = {t:F4}");
-
-                var btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
-                var resultCircle = new Circle(pt, Vector3d.ZAxis, circle.Radius) { ColorIndex = 3 };
-                btr.AppendEntity(resultCircle);
-                tr.AddNewlyCreatedDBObject(resultCircle, true);
-
-                tr.Commit();
-                ed.WriteMessage("\n✅ Đã vẽ lại đường tròn tại vị trí tương ứng trên GeoArc.");
-            }
-        }
-
-        [CommandMethod("Test_GeoArc_DistanceTo")]
-        public void Test_GeoArc_DistanceTo()
-        {
-            var doc = Application.DocumentManager.MdiActiveDocument;
-            var db = doc.Database;
-            var ed = doc.Editor;
-
-            var arcIds = SelectUtilities.SelectObjects("ARC", "\n👉 Chọn ARC:");
-            var circleIds = SelectUtilities.SelectObjects("CIRCLE", "\n👉 Chọn CIRCLE:");
-
-            if (arcIds.Count == 0 || circleIds.Count == 0) return;
-
-            using (var tr = db.TransactionManager.StartTransaction())
-            {
-                var arc = tr.GetObject(arcIds[0], OpenMode.ForRead) as Arc;
-                var circle = tr.GetObject(circleIds[0], OpenMode.ForRead) as Circle;
-
-                if (arc == null || circle == null)
-                {
-                    ed.WriteMessage("\n❌ Không hợp lệ.");
-                    return;
-                }
-
-                var geo = new GeoArc(arc);
-                double dist = geo.DistanceTo(circle.Center);
-                ed.WriteMessage($"\n📏 Khoảng cách từ tâm CIRCLE đến GeoArc: {dist:F4}");
-
-                var btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
-                var testCircle = new Circle(circle.Center, Vector3d.ZAxis, 1.0) { ColorIndex = 1 };
-                btr.AppendEntity(testCircle);
-                tr.AddNewlyCreatedDBObject(testCircle, true);
-
-                tr.Commit();
-                ed.WriteMessage("\n✅ Đã vẽ lại điểm test trên GeoArc.");
-            }
-        }
-
-        [CommandMethod("Test_GeoArc_CoordinateSystem")]
-        public void Test_GeoArc_CoordinateSystem()
-        {
-            var doc = Application.DocumentManager.MdiActiveDocument;
-            var db = doc.Database;
-            var ed = doc.Editor;
-
-            var ids = SelectUtilities.SelectObjects("ARC", "\n👉 Chọn ARC để test hệ trục:");
-            if (ids.Count == 0) return;
-
-            using (var tr = db.TransactionManager.StartTransaction())
-            {
-                var arc = tr.GetObject(ids[0], OpenMode.ForRead) as Arc;
-                if (arc == null) return;
-
-                var geo = new GeoArc(arc);
-                var btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
-
-                var tValues = new[] { 0.0, 0.25, 0.5, 0.75, 1.0 };
-                foreach (var t in tValues)
-                {
-                    var cs = geo.CoordinateSystemAtParameter(t);
-                    foreach (var ent in cs.Test())
-                    {
-                        ent.ColorIndex = 2;
-                        btr.AppendEntity(ent);
-                        tr.AddNewlyCreatedDBObject(ent, true);
-                    }
-
-                    var fixZ = geo.CoordinateSystemAtParameterFixZ(t);
-                    foreach (var ent in fixZ.Test())
-                    {
-                        ent.ColorIndex = 6;
-                        btr.AppendEntity(ent);
-                        tr.AddNewlyCreatedDBObject(ent, true);
-                    }
-                }
-
-                tr.Commit();
-                ed.WriteMessage("\n✅ Đã vẽ hệ trục thường và fixZ trên GeoArc.");
-            }
-        }
-
-        [CommandMethod("Test_GeoArc_From3Points")]
-        public void Test_GeoArc_From3Points()
-        {
-            var doc = Application.DocumentManager.MdiActiveDocument;
-            var db = doc.Database;
-            var ed = doc.Editor;
-
-            var opts = new PromptPointOptions("\n👉 Chọn điểm **bắt đầu**:");
-            var res1 = ed.GetPoint(opts);
-            if (res1.Status != PromptStatus.OK) return;
-
-            opts.Message = "\n👉 Chọn điểm **ở giữa** (trên cung tròn):";
-            var res2 = ed.GetPoint(opts);
-            if (res2.Status != PromptStatus.OK) return;
-
-            opts.Message = "\n👉 Chọn điểm **kết thúc**:";
-            var res3 = ed.GetPoint(opts);
-            if (res3.Status != PromptStatus.OK) return;
-
-            Point3d pt1 = res1.Value;
-            Point3d pt2 = res2.Value;
-            Point3d pt3 = res3.Value;
-
-            using (var tr = db.TransactionManager.StartTransaction())
-            {
-                var btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
-
-                try
-                {
-                    var geo = new GeoArc(pt1, pt2, pt3);
-                    var ents = geo.Test(); // tạo Arc AutoCAD
-
-                    foreach (var ent in ents)
-                    {
-                        btr.AppendEntity(ent);
-                        tr.AddNewlyCreatedDBObject(ent, true);
-                    }
-
-                    // Vẽ các điểm được chọn
-                    var c1 = new Circle(pt1, Vector3d.ZAxis, 0.4) { ColorIndex = 2 }; // Xanh lá
-                    var c2 = new Circle(pt2, Vector3d.ZAxis, 0.4) { ColorIndex = 3 }; // Xanh nhạt
-                    var c3 = new Circle(pt3, Vector3d.ZAxis, 0.4) { ColorIndex = 1 }; // Đỏ
-
-                    btr.AppendEntity(c1); tr.AddNewlyCreatedDBObject(c1, true);
-                    btr.AppendEntity(c2); tr.AddNewlyCreatedDBObject(c2, true);
-                    btr.AppendEntity(c3); tr.AddNewlyCreatedDBObject(c3, true);
-
-                    ed.WriteMessage("\n✅ Đã tạo GeoArc từ 3 điểm.");
-                }
-                catch (System.Exception ex)
-                {
-                    ed.WriteMessage($"\n❌ Không tạo được GeoArc: {ex.Message}");
-                }
-
-                tr.Commit();
-            }
-        }
-
-        [CommandMethod("Test_GeoArc_PullOntoPlane")]
-        public void Test_GeoArc_PullOntoPlane()
-        {
-            var doc = Application.DocumentManager.MdiActiveDocument;
-            var db = doc.Database;
-            var ed = doc.Editor;
-
-            var ids = SelectUtilities.SelectObjects("ARC", "\n👉 Chọn ARC để kéo xuống mặt phẳng XOY:");
-            if (ids.Count == 0) return;
-
-            using (var tr = db.TransactionManager.StartTransaction())
-            {
-                var arc = tr.GetObject(ids[0], OpenMode.ForRead) as Arc;
-                if (arc == null)
-                {
-                    ed.WriteMessage("\n❌ Không phải ARC.");
-                    return;
-                }
-
-                var geo = new GeoArc(arc);
-                var plane = new GeoPlane(Point3d.Origin, Vector3d.ZAxis);
-                var projected = geo.PullOntoPlane(plane);
-
-                var btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
-                var original = geo.Test()[0]; original.ColorIndex = 4;
-                var pulled = projected.Test()[0]; pulled.ColorIndex = 1;
-
-                btr.AppendEntity(original); tr.AddNewlyCreatedDBObject(original, true);
-                btr.AppendEntity(pulled); tr.AddNewlyCreatedDBObject(pulled, true);
-
-                tr.Commit();
-                ed.WriteMessage("\n✅ Đã kéo GeoArc xuống mặt phẳng XOY và vẽ kết quả.");
-            }
-        }
-
-        [CommandMethod("Test_GeoArc_IntersectWith_Arc")]
-        public void Test_GeoArc_IntersectWith_Arc()
-        {
-            var doc = Application.DocumentManager.MdiActiveDocument;
-            var db = doc.Database;
-            var ed = doc.Editor;
-
-            // Chọn 2 ARC
-            var ids = SelectUtilities.SelectObjects("ARC", "\n👉 Chọn 2 ARC để test giao nhau:");
-            if (ids.Count < 2)
-            {
-                ed.WriteMessage("\n❌ Cần chọn đúng 2 ARC.");
-                return;
-            }
-
-            using (var tr = db.TransactionManager.StartTransaction())
-            {
-                var arc1 = tr.GetObject(ids[0], OpenMode.ForRead) as Arc;
-                var arc2 = tr.GetObject(ids[1], OpenMode.ForRead) as Arc;
-
-                if (arc1 == null || arc2 == null)
-                {
-                    ed.WriteMessage("\n❌ Không hợp lệ.");
-                    return;
-                }
-
-                var geo1 = new GeoArc(arc1.StartPoint, arc1.GetPointAtParameter(0.5), arc1.EndPoint);
-                var geo2 = new GeoArc(arc2.StartPoint, arc2.GetPointAtParameter(0.5), arc2.EndPoint);
-
-                var result = geo1.IntersectWith(geo2);
-                ed.WriteMessage($"\n🔎 Giao kết quả: {result}");
-
-                var btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
-
-                switch (result.Type)
-                {
-                    case IntersectionResult.IntersectType.Intersect:
-                        foreach (var pt in result.Points)
-                        {
-                            var circ = new Circle(pt, Vector3d.ZAxis, 1.0) { ColorIndex = 1 }; // đỏ
-                            btr.AppendEntity(circ);
-                            tr.AddNewlyCreatedDBObject(circ, true);
-                        }
-                        break;
-
-                    case IntersectionResult.IntersectType.Overlap:
-                    case IntersectionResult.IntersectType.SameLine:
-                        foreach (var seg in result.OverlapSegments)
-                        {
-                            var ent = seg.Test()[0]; ent.ColorIndex = 3;
-                            btr.AppendEntity(ent);
-                            tr.AddNewlyCreatedDBObject(ent, true);
-                        }
-                        break;
-
-                    default:
-                        ed.WriteMessage("\n❌ Không có giao nhau.");
-                        break;
-                }
-
-                tr.Commit();
-                ed.WriteMessage("\n✅ Đã vẽ kết quả giao nhau giữa 2 ARC.");
-            }
-        }
-
-        [CommandMethod("Test_GeoArc_IntersectWith_Line")]
-        public void Test_GeoArc_IntersectWith_Line()
-        {
-            var doc = Application.DocumentManager.MdiActiveDocument;
-            var db = doc.Database;
-            var ed = doc.Editor;
-
-            // Chọn 1 ARC và 1 LINE
-            var arcIds = SelectUtilities.SelectObjects("ARC", "\n👉 Chọn 1 ARC:");
-            var lineIds = SelectUtilities.SelectObjects("LINE", "\n👉 Chọn 1 LINE:");
-
-            if (arcIds.Count == 0 || lineIds.Count == 0)
-            {
-                ed.WriteMessage("\n❌ Cần chọn 1 ARC và 1 LINE.");
-                return;
-            }
-
-            using (var tr = db.TransactionManager.StartTransaction())
-            {
-                var arc = tr.GetObject(arcIds[0], OpenMode.ForRead) as Arc;
-                var line = tr.GetObject(lineIds[0], OpenMode.ForRead) as Line;
-
-                if (arc == null || line == null)
-                {
-                    ed.WriteMessage("\n❌ Không hợp lệ.");
-                    return;
-                }
-
-                var geoArc = new GeoArc(arc);
-                var geoLine = new GeoLine(line);
-
-                var result = geoArc.IntersectWith(geoLine);
-                ed.WriteMessage($"\n🔎 Giao kết quả: {result}");
-
-                var btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
-
-                switch (result.Type)
-                {
-                    case IntersectionResult.IntersectType.Intersect:
-                        foreach (var pt in result.Points)
-                        {
-                            var circ = new Circle(pt, Vector3d.ZAxis, 1.0) { ColorIndex = 1 }; // đỏ
-                            btr.AppendEntity(circ);
-                            tr.AddNewlyCreatedDBObject(circ, true);
-                        }
-                        break;
-
-                    case IntersectionResult.IntersectType.Overlap:
-                    case IntersectionResult.IntersectType.SameLine:
-                        foreach (var seg in result.OverlapSegments)
-                        {
-                            var ent = seg.Test()[0]; ent.ColorIndex = 3;
-                            btr.AppendEntity(ent);
-                            tr.AddNewlyCreatedDBObject(ent, true);
-                        }
-                        break;
-
-                    default:
-                        ed.WriteMessage("\n❌ Không có giao nhau.");
-                        break;
-                }
-
-                tr.Commit();
-                ed.WriteMessage("\n✅ Đã vẽ kết quả giao nhau ARC - LINE.");
-            }
-        }
-        [CommandMethod("Test_GeoArc_Reconstruct")]
-        public void Test_GeoArc_Reconstruct()
-        {
-            var doc = Application.DocumentManager.MdiActiveDocument;
-            var db = doc.Database;
-            var ed = doc.Editor;
-
-            // Chọn 1 đối tượng ARC
-            var result = ed.GetEntity("\n👉 Chọn một ARC để kiểm thử GeoArc:");
-            if (result.Status != PromptStatus.OK) return;
-
-            using (var tr = db.TransactionManager.StartTransaction())
-            {
-                var arc = tr.GetObject(result.ObjectId, OpenMode.ForRead) as Arc;
-                if (arc == null)
-                {
-                    ed.WriteMessage("\n❌ Đối tượng không phải ARC.");
-                    return;
-                }
-
-                // Lấy 3 điểm đặc trưng
-                Point3d start = arc.StartPoint;
-                Point3d mid = arc.GetPointAtParameter(0.5);
-                Point3d end = arc.EndPoint;
-
-                // Dựng GeoArc từ 3 điểm
-                var geo = new GeoArc(start, mid, end);
-
-                // Tạo Arc từ dữ liệu GeoArc
-                var rebuilt = new Arc(
-                    geo.CenterPoint,
-                    geo.Normal,
-                    geo.Radius,
-                    geo.StartAngle,
-                    geo.EndAngle
-                )
-                {
-                    ColorIndex = 2 // Xanh lá: để phân biệt
-                };
-
-                // Ghi vào bản vẽ
-                var btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
-                btr.AppendEntity(rebuilt);
-                tr.AddNewlyCreatedDBObject(rebuilt, true);
-
-                tr.Commit();
-            }
-        }
-
-        [CommandMethod("Test_GeoArc_SplitByPoints")]
-        public void Test_GeoArc_SplitByPoints()
-        {
-            var doc = Application.DocumentManager.MdiActiveDocument;
-            if (doc == null) return;
-            var db = doc.Database;
-            var ed = doc.Editor;
-
-            // Bước 1: Yêu cầu người dùng chọn một đối tượng Arc có sẵn
-            var pEntOptions = new PromptEntityOptions("\n🟡 Chọn cung tròn (Arc) để cắt:");
-            pEntOptions.SetRejectMessage("\nĐối tượng phải là một Arc.");
-            pEntOptions.AddAllowedClass(typeof(Arc), true);
-            var pEntResult = ed.GetEntity(pEntOptions);
-            if (pEntResult.Status != PromptStatus.OK) return;
-
-            // Bước 2: Yêu cầu người dùng chọn nhiều điểm để cắt
-            var splitPoints = new List<Point3d>();
-            while (true)
-            {
-                var pPtOpts = new PromptPointOptions("\n🟡 Chọn điểm để cắt (hoặc nhấn Enter/ESC để kết thúc):");
-                pPtOpts.AllowNone = true;
-                var pPtResult = ed.GetPoint(pPtOpts);
-
-                if (pPtResult.Status == PromptStatus.Cancel) return;
-                if (pPtResult.Status == PromptStatus.None) break; // Kết thúc chọn điểm khi nhấn Enter
-
-                splitPoints.Add(pPtResult.Value);
-            }
-
-            if (splitPoints.Count == 0)
-            {
-                ed.WriteMessage("\nBạn chưa chọn điểm nào để cắt.");
-                return;
-            }
-
-            // Bước 3: Thực hiện cắt và tạo đối tượng mới
             try
             {
+                var arcRes = ed.GetEntity("\nChọn cung ARC: ");
+                if (arcRes.Status != PromptStatus.OK) return;
+
+                var ptRes = ed.GetPoint("\nChọn một điểm bất kỳ: ");
+                if (ptRes.Status != PromptStatus.OK) return;
+
+                Point3d picked = ptRes.Value;
+
                 using (var tr = db.TransactionManager.StartTransaction())
                 {
-                    // Lấy đối tượng Arc gốc
-                    var sourceArc = tr.GetObject(pEntResult.ObjectId, OpenMode.ForRead) as Arc;
-                    if (sourceArc == null)
+                    var arc = tr.GetObject(arcRes.ObjectId, OpenMode.ForRead) as Arc;
+                    if (arc == null)
                     {
-                        ed.WriteMessage("\nKhông thể đọc đối tượng Arc.");
+                        ed.WriteMessage("\nKhông phải là Arc.");
                         return;
                     }
 
-                    // Dựng GeoArc từ Arc gốc
-                    var geoArc = new GeoArc(sourceArc);
+                    var geoArc = new GeoArc(arc.StartPoint, arc.GetPointAtDist(arc.Length / 2.0), arc.EndPoint);
+                    double t = geoArc.ParameterAtPoint(picked);
+                    Point3d ptOnArc = geoArc.PointAtParameter(t);
 
-                    // Gọi hàm cắt theo danh sách điểm
-                    List<GeoCurves> arcSegments = geoArc.SplitByPoints(splitPoints);
-
-                    // Chuẩn bị để tạo các đối tượng hình học mới
-                    var colors = new short[] { 1, 2, 3, 4, 5, 6 }; // Mảng màu: Đỏ, Vàng, Lục, Lam...
-                    int colorIndex = 0;
+                    var circle = new Circle(ptOnArc, geoArc.Normal, 0.3)
+                    {
+                        ColorIndex = 2
+                    };
 
                     var btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
+                    btr.AppendEntity(circle);
+                    tr.AddNewlyCreatedDBObject(circle, true);
 
-                    // Duyệt qua các đoạn cung tròn con và tạo entity cho chúng
-                    foreach (var segment in arcSegments)
-                    {
-                        if (segment is GeoArc smallArc)
-                        {
-                            // Dùng hàm .Test() để tạo đối tượng Arc từ GeoArc
-                            Entity[] segmentEntities = smallArc.Test();
-                            if (segmentEntities.Length > 0)
-                            {
-                                Entity entity = segmentEntities[0];
-                                entity.ColorIndex = colors[colorIndex % colors.Length]; // Gán màu theo vòng lặp
-
-                                btr.AppendEntity(entity);
-                                tr.AddNewlyCreatedDBObject(entity, true);
-                                colorIndex++;
-                            }
-                        }
-                    }
-
-                    // Xóa cung tròn gốc đi để chỉ hiển thị kết quả
-                    sourceArc.UpgradeOpen();
-                    sourceArc.Erase();
+                    ed.WriteMessage($"\nTham số t = {t:0.000}");
 
                     tr.Commit();
                 }
             }
             catch (System.Exception ex)
             {
-                ed.WriteMessage($"\n❌ Lỗi: {ex.Message}");
+                ed.WriteMessage($"\nLỗi: {ex.Message}");
             }
         }
+
+        [CommandMethod("Test_GeoArc_SplitByParameter")]
+        public void Test_GeoArc_SplitByParameter()
+        {
+            var doc = Application.DocumentManager.MdiActiveDocument;
+            var db = doc.Database;
+            var ed = doc.Editor;
+
+            try
+            {
+                // 1. Chọn cung ARC
+                var arcRes = ed.GetEntity("\nChọn cung ARC để chia: ");
+                if (arcRes.Status != PromptStatus.OK) return;
+
+                // 2. Nhập danh sách tham số t (0–1), cách nhau bởi dấu phẩy
+                var input = ed.GetString("\nNhập danh sách tham số t (ví dụ: 0.25,0.5,0.75): ");
+                if (input.Status != PromptStatus.OK) return;
+
+                var tList = input.StringResult
+                    .Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
+                    .Select(s =>
+                    {
+                        if (double.TryParse(s.Trim(), out double val)) return val;
+                        return -1.0;
+                    })
+                    .Where(t => t >= 0.0 && t <= 1.0)
+                    .ToList();
+
+                if (tList.Count == 0)
+                {
+                    ed.WriteMessage("\nKhông có tham số hợp lệ.");
+                    return;
+                }
+
+                using (var tr = db.TransactionManager.StartTransaction())
+                {
+                    var arc = tr.GetObject(arcRes.ObjectId, OpenMode.ForRead) as Arc;
+                    if (arc == null)
+                    {
+                        ed.WriteMessage("\nKhông phải là Arc.");
+                        return;
+                    }
+
+                    // 3. Tạo GeoArc từ 3 điểm
+                    var geoArc = new GeoArc(arc.StartPoint, arc.GetPointAtDist(arc.Length / 2.0), arc.EndPoint);
+
+                    // 4. Gọi SplitByParameter
+                    var splitSegments = geoArc.SplitByParameter(tList);
+
+                    // 5. Vẽ từng đoạn ra model space
+                    var btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
+                    int color = 1;
+
+                    foreach (GeoArc segment in splitSegments.OfType<GeoArc>())
+                    {
+                        foreach (var ent in segment.Test())
+                        {
+                            ent.ColorIndex = color;
+                            btr.AppendEntity(ent);
+                            tr.AddNewlyCreatedDBObject(ent, true);
+                        }
+
+                        color = (color % 7) + 1; // Đổi màu cho dễ phân biệt
+                    }
+
+                    tr.Commit();
+                }
+            }
+            catch (System.Exception ex)
+            {
+                ed.WriteMessage($"\nLỗi: {ex.Message}");
+            }
+        }
+
+        [CommandMethod("Test_GeoLine_IntersectWith_GeoArc")]
+        public void Test_GeoLine_IntersectWith_GeoArc()
+        {
+            var doc = Application.DocumentManager.MdiActiveDocument;
+            var db = doc.Database;
+            var ed = doc.Editor;
+
+            try
+            {
+                // 1. Chọn đối tượng ARC
+                var arcRes = ed.GetEntity("\nChọn cung ARC: ");
+                if (arcRes.Status != PromptStatus.OK) return;
+
+                // 2. Chọn LINE hoặc Polyline có đúng 2 đỉnh
+                var lineRes = ed.GetEntity("\nChọn đoạn thẳng (LINE hoặc Polyline 2 đỉnh): ");
+                if (lineRes.Status != PromptStatus.OK) return;
+
+                using (var tr = db.TransactionManager.StartTransaction())
+                {
+                    // 3. Dựng GeoArc
+                    var arcObj = tr.GetObject(arcRes.ObjectId, OpenMode.ForRead) as Arc;
+                    if (arcObj == null)
+                    {
+                        ed.WriteMessage("\n❌ Đối tượng không phải là Arc.");
+                        return;
+                    }
+
+                    var geoArc = new GeoArc(
+                        arcObj.StartPoint,
+                        arcObj.GetPointAtDist(arcObj.Length / 2.0),
+                        arcObj.EndPoint
+                    );
+
+                    // 4. Dựng GeoLine
+                    var lineObj = tr.GetObject(lineRes.ObjectId, OpenMode.ForRead);
+                    Point3d p1, p2;
+
+                    if (lineObj is Line line)
+                    {
+                        p1 = line.StartPoint;
+                        p2 = line.EndPoint;
+                    }
+                    else if (lineObj is Polyline pl && pl.NumberOfVertices == 2)
+                    {
+                        p1 = pl.GetPoint3dAt(0);
+                        p2 = pl.GetPoint3dAt(1);
+                    }
+                    else
+                    {
+                        ed.WriteMessage("\n❌ Chỉ chấp nhận LINE hoặc Polyline có 2 đỉnh.");
+                        return;
+                    }
+
+                    var geoLine = new GeoLine(p1, p2);
+
+                    // 5. Gọi giao điểm theo đúng thiết kế: line.IntersectWith(arc)
+                    var result = geoLine.IntersectWith(geoArc);
+
+                    if (!result.HasIntersection)
+                    {
+                        ed.WriteMessage("\n❌ Không có giao điểm.");
+                        return;
+                    }
+
+                    // 6. Vẽ các điểm giao
+                    var btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
+                    foreach (var pt in result.Points)
+                    {
+                        var circle = new Circle(pt, geoArc.Normal, 0.2)
+                        {
+                            ColorIndex = 1
+                        };
+                        btr.AppendEntity(circle);
+                        tr.AddNewlyCreatedDBObject(circle, true);
+                    }
+
+                    ed.WriteMessage($"\n✅ Có {result.Points.Count} giao điểm.");
+                    tr.Commit();
+                }
+            }
+            catch (System.Exception ex)
+            {
+                ed.WriteMessage($"\nLỗi: {ex.Message}");
+            }
+        }
+
+        [CommandMethod("Test_GeoArc_IntersectWith_GeoArc")]
+        public void Test_GeoArc_IntersectWith_GeoArc()
+        {
+            var doc = Application.DocumentManager.MdiActiveDocument;
+            var db = doc.Database;
+            var ed = doc.Editor;
+
+            try
+            {
+                // 1. Chọn ARC thứ nhất
+                var arcRes1 = ed.GetEntity("\n👉 Chọn cung ARC thứ nhất: ");
+                if (arcRes1.Status != PromptStatus.OK) return;
+
+                // 2. Chọn ARC thứ hai
+                var arcRes2 = ed.GetEntity("\n👉 Chọn cung ARC thứ hai: ");
+                if (arcRes2.Status != PromptStatus.OK) return;
+
+                using (var tr = db.TransactionManager.StartTransaction())
+                {
+                    // 3. Lấy đối tượng ARC thứ nhất
+                    var arcObj1 = tr.GetObject(arcRes1.ObjectId, OpenMode.ForRead) as Arc;
+                    if (arcObj1 == null)
+                    {
+                        ed.WriteMessage("\n❌ Đối tượng đầu tiên không phải là Arc.");
+                        return;
+                    }
+
+                    var geoArc1 = new GeoArc(
+                        arcObj1.StartPoint,
+                        arcObj1.GetPointAtDist(arcObj1.Length / 2.0),
+                        arcObj1.EndPoint
+                    );
+
+                    // 4. Lấy đối tượng ARC thứ hai
+                    var arcObj2 = tr.GetObject(arcRes2.ObjectId, OpenMode.ForRead) as Arc;
+                    if (arcObj2 == null)
+                    {
+                        ed.WriteMessage("\n❌ Đối tượng thứ hai không phải là Arc.");
+                        return;
+                    }
+
+                    var geoArc2 = new GeoArc(
+                        arcObj2.StartPoint,
+                        arcObj2.GetPointAtDist(arcObj2.Length / 2.0),
+                        arcObj2.EndPoint
+                    );
+
+                    // 5. Gọi hàm giao điểm
+                    var result = geoArc1.IntersectWithArc(geoArc2);
+
+                    if (!result.HasIntersection)
+                    {
+                        ed.WriteMessage("\n❌ Không có giao điểm giữa hai cung.");
+                        return;
+                    }
+
+                    // 6. Vẽ điểm giao
+                    var btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
+                    foreach (var pt in result.Points)
+                    {
+                        var circle = new Circle(pt, geoArc1.Normal, 0.2)
+                        {
+                            ColorIndex = 2 // đỏ
+                        };
+                        btr.AppendEntity(circle);
+                        tr.AddNewlyCreatedDBObject(circle, true);
+                    }
+
+                    ed.WriteMessage($"\n✅ Có {result.Points.Count} giao điểm.");
+                    tr.Commit();
+                }
+            }
+            catch (System.Exception ex)
+            {
+                ed.WriteMessage($"\nLỗi: {ex.Message}");
+            }
+        }
+
 
         #endregion
 
@@ -1557,6 +1267,177 @@ namespace BIMUP.Core
                 tr.Commit();
             }
         }
+
+        [CommandMethod("Test_GeoPolycurve3d_IntersectWith")]
+        public void Test_GeoPolycurve3d_IntersectWith()
+        {
+            var doc = Application.DocumentManager.MdiActiveDocument;
+            var db = doc.Database;
+            var ed = doc.Editor;
+
+            try
+            {
+                // 1. Chọn Polyline3d thứ nhất
+                var res1 = ed.GetEntity("\n👉 Chọn Polyline3D thứ nhất: ");
+                if (res1.Status != PromptStatus.OK) return;
+
+                // 2. Chọn Polyline3d thứ hai
+                var res2 = ed.GetEntity("\n👉 Chọn Polyline3D thứ hai: ");
+                if (res2.Status != PromptStatus.OK) return;
+
+                using (var tr = db.TransactionManager.StartTransaction())
+                {
+                    var pl1 = tr.GetObject(res1.ObjectId, OpenMode.ForRead) as Polyline3d;
+                    var pl2 = tr.GetObject(res2.ObjectId, OpenMode.ForRead) as Polyline3d;
+
+                    if (pl1 == null || pl2 == null)
+                    {
+                        ed.WriteMessage("\n❌ Cả hai đối tượng phải là Polyline3D.");
+                        return;
+                    }
+
+                    // 3. Dựng GeoPolycurve từ Polyline3d
+                    GeoPolycurve geo1 = new GeoPolycurve(pl1);
+                    GeoPolycurve geo2 = new GeoPolycurve(pl2);
+
+                    // 4. Giao nhau
+                    var result = geo1.IntersectWith(geo2);
+
+                    if (!result.HasIntersection)
+                    {
+                        ed.WriteMessage("\n❌ Không có giao điểm.");
+                        return;
+                    }
+
+                    // 5. Vẽ giao điểm
+                    var btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
+                    foreach (var pt in result.Points)
+                    {
+                        var circle = new Circle(pt, Vector3d.ZAxis, 0.2)
+                        {
+                            ColorIndex = 5 // màu xanh dương
+                        };
+                        btr.AppendEntity(circle);
+                        tr.AddNewlyCreatedDBObject(circle, true);
+                    }
+
+                    ed.WriteMessage($"\n✅ Có {result.Points.Count} giao điểm.");
+                    tr.Commit();
+                }
+            }
+            catch (System.Exception ex)
+            {
+                ed.WriteMessage($"\nLỗi: {ex.Message}");
+            }
+        }
+
+        [CommandMethod("Test_GeoPolycurve_Info")]
+        public void Test_GeoPolycurve_Info()
+        {
+            var doc = Application.DocumentManager.MdiActiveDocument;
+            var db = doc.Database;
+            var ed = doc.Editor;
+
+            var res = ed.GetEntity("\n👉 Chọn một Polyline3D để xem thông tin: ");
+            if (res.Status != PromptStatus.OK) return;
+
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                var obj = tr.GetObject(res.ObjectId, OpenMode.ForRead) as Polyline3d;
+                if (obj == null)
+                {
+                    ed.WriteMessage("\n❌ Không phải là Polyline3D.");
+                    return;
+                }
+
+                var poly = new GeoPolycurve(obj);
+                ed.WriteMessage(poly.PrintInfo());
+
+                tr.Commit();
+            }
+        }
+
+        [CommandMethod("Test_OverkillGeoLine")]
+        public static void Test_OverkillGeoLine()
+        {
+            var doc = Application.DocumentManager.MdiActiveDocument;
+            var ed = doc.Editor;
+            var db = doc.Database;
+
+            var res = ed.GetSelection();
+            if (res.Status != PromptStatus.OK)
+            {
+                ed.WriteMessage("\n❌ Không có đối tượng nào được chọn.");
+                return;
+            }
+
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                var input = new List<GeoCurves>();
+                var toErase = new List<ObjectId>();
+
+                foreach (ObjectId id in res.Value.GetObjectIds())
+                {
+                    var ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
+                    if (ent == null) continue;
+
+                    if (ent is Line line)
+                    {
+                        input.Add(new GeoLine(line));
+                        toErase.Add(id); // ✔️ ghi nhớ để xóa
+                    }
+                    else if (ent is Polyline3d poly3d)
+                    {
+                        try
+                        {
+                            var geo = new GeoPolycurve(poly3d);
+                            input.AddRange(geo.Segments.OfType<GeoLine>());
+                            toErase.Add(id); // ✔️ ghi nhớ để xóa
+                        }
+                        catch (System.Exception ex)
+                        {
+                            ed.WriteMessage($"\n⚠️ Không thể chuyển Polyline3D: {ex.Message}");
+                        }
+                    }
+                }
+
+                if (input.Count == 0)
+                {
+                    ed.WriteMessage("\n⚠️ Không có đối tượng hợp lệ để xử lý.");
+                    return;
+                }
+
+                // B2: Gọi OverKill
+                var result = GeometryUtils.OverKill(input);
+
+                // B3: Xóa các line/3dpolyline cũ
+                foreach (var id in toErase)
+                {
+                    var obj = tr.GetObject(id, OpenMode.ForWrite);
+                    obj?.Erase();
+                }
+
+                // B4: Vẽ kết quả
+                var btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
+                int color = 1;
+
+                foreach (var poly in result)
+                {
+                    foreach (var ent in poly.Test())
+                    {
+                        ent.ColorIndex = color;
+                        btr.AppendEntity(ent);
+                        tr.AddNewlyCreatedDBObject(ent, true);
+                    }
+                    color = (color % 7) + 1;
+                }
+
+                tr.Commit();
+                //ed.WriteMessage($"\n✅ Đã gộp và thay thế {toErase.Count} đường thành {result.Count} polyline.");
+            }
+        }
+
+
         #endregion
 
         #region GeoFace
@@ -1742,6 +1623,225 @@ namespace BIMUP.Core
                 }
             }
         }
+
+        [CommandMethod("Test_GeoTriangle_IsCoplanar")]
+        public void Test_GeoTriangle_IsCoplanar()
+        {
+            var doc = Application.DocumentManager.MdiActiveDocument;
+            var db = doc.Database;
+            var ed = doc.Editor;
+
+            try
+            {
+                // 1. Chọn tam giác thứ nhất (Polyline3d)
+                var res1 = ed.GetEntity("\n👉 Chọn tam giác thứ nhất (Polyline3d): ");
+                if (res1.Status != PromptStatus.OK) return;
+
+                // 2. Chọn tam giác thứ hai (Polyline3d)
+                var res2 = ed.GetEntity("\n👉 Chọn tam giác thứ hai (Polyline3d): ");
+                if (res2.Status != PromptStatus.OK) return;
+
+                using (var tr = db.TransactionManager.StartTransaction())
+                {
+                    var poly1 = tr.GetObject(res1.ObjectId, OpenMode.ForRead) as Polyline3d;
+                    var poly2 = tr.GetObject(res2.ObjectId, OpenMode.ForRead) as Polyline3d;
+
+                    var tri1 = GeoTriangle.FromPolyline3d(poly1);
+                    var tri2 = GeoTriangle.FromPolyline3d(poly2);
+
+                    if (tri1 == null || tri2 == null)
+                    {
+                        ed.WriteMessage("\n❌ Không thể tạo tam giác từ Polyline3d.");
+                        return;
+                    }
+
+                    bool coplanar = tri1.IsCoplanarWith(tri2);
+                    if (coplanar)
+                        ed.WriteMessage("\n✅ Hai tam giác ĐỒNG PHẲNG.");
+                    else
+                        ed.WriteMessage("\n⚠️ Hai tam giác KHÔNG đồng phẳng.");
+
+                    tr.Commit();
+                }
+            }
+            catch (System.Exception ex)
+            {
+                ed.WriteMessage($"\nLỗi: {ex.Message}");
+            }
+        }
+
+        [CommandMethod("Test_GeoTriangle_IntersectionLine")]
+        public void Test_GeoTriangle_IntersectionLine()
+        {
+            var doc = Application.DocumentManager.MdiActiveDocument;
+            var db = doc.Database;
+            var ed = doc.Editor;
+
+            try
+            {
+                // Chọn tam giác thứ nhất
+                var res1 = ed.GetEntity("\n👉 Chọn Polyline3D làm tam giác thứ nhất: ");
+                if (res1.Status != PromptStatus.OK) return;
+
+                // Chọn tam giác thứ hai
+                var res2 = ed.GetEntity("\n👉 Chọn Polyline3D làm tam giác thứ hai: ");
+                if (res2.Status != PromptStatus.OK) return;
+
+                using (var tr = db.TransactionManager.StartTransaction())
+                {
+                    var obj1 = tr.GetObject(res1.ObjectId, OpenMode.ForRead) as Polyline3d;
+                    var obj2 = tr.GetObject(res2.ObjectId, OpenMode.ForRead) as Polyline3d;
+
+                    if (obj1 == null || obj2 == null)
+                    {
+                        ed.WriteMessage("\n❌ Phải chọn Polyline3d.");
+                        return;
+                    }
+
+                    var tri1 = GeoTriangle.FromPolyline3d(obj1);
+                    var tri2 = GeoTriangle.FromPolyline3d(obj2);
+
+                    if (tri1 == null || tri2 == null)
+                    {
+                        ed.WriteMessage("\n❌ Không tạo được GeoTriangle từ Polyline3d.");
+                        return;
+                    }
+
+                    // Kiểm tra giao tuyến
+                    GeoLine intersectionLine = tri1.GetIntersectionLineWith(tri2);
+                    if (intersectionLine == null)
+                    {
+                        ed.WriteMessage("\n❌ Hai tam giác không giao nhau (không đồng phẳng hoặc song song).");
+                        return;
+                    }
+
+                    // Vẽ đường giao tuyến
+                    var btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
+                    var acLine = new Line(intersectionLine.StartPoint, intersectionLine.EndPoint)
+                    {
+                        ColorIndex = 1 // đỏ
+                    };
+
+                    btr.AppendEntity(acLine);
+                    tr.AddNewlyCreatedDBObject(acLine, true);
+
+                    ed.WriteMessage("\n✅ Đã vẽ đường giao tuyến giữa hai tam giác.");
+                    tr.Commit();
+                }
+            }
+            catch (System.Exception ex)
+            {
+                ed.WriteMessage($"\n❌ Lỗi: {ex.Message}");
+            }
+        }
+
+        [CommandMethod("Test_GeoTriangle_IntersectSegment")]
+        public void Test_GeoTriangle_IntersectSegment()
+        {
+            var doc = Application.DocumentManager.MdiActiveDocument;
+            var db = doc.Database;
+            var ed = doc.Editor;
+
+            try
+            {
+                // Chọn tam giác thứ nhất
+                var res1 = ed.GetEntity("\n👉 Chọn tam giác đầu tiên (Polyline3D có 3 đỉnh): ");
+                if (res1.Status != PromptStatus.OK) return;
+
+                // Chọn tam giác thứ hai
+                var res2 = ed.GetEntity("\n👉 Chọn tam giác thứ hai (Polyline3D có 3 đỉnh): ");
+                if (res2.Status != PromptStatus.OK) return;
+
+                using (var tr = db.TransactionManager.StartTransaction())
+                {
+                    var obj1 = tr.GetObject(res1.ObjectId, OpenMode.ForRead) as Polyline3d;
+                    var obj2 = tr.GetObject(res2.ObjectId, OpenMode.ForRead) as Polyline3d;
+
+                    var tri1 = GeoTriangle.FromPolyline3d(obj1);
+                    var tri2 = GeoTriangle.FromPolyline3d(obj2);
+
+                    if (tri1 == null || tri2 == null)
+                    {
+                        ed.WriteMessage("\n❌ Một trong hai polyline không hợp lệ hoặc không có đúng 3 đỉnh.");
+                        return;
+                    }
+
+                    // Gọi hàm kiểm tra giao nhau
+                    var intersectSegment = tri1.GetIntersection(tri2);
+
+                    if (intersectSegment == null)
+                    {
+                        ed.WriteMessage("\n❌ Không có đoạn giao nhau giữa hai tam giác.");
+                        return;
+                    }
+
+                    // Vẽ đoạn giao
+                    var btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
+                    var line = new Line(intersectSegment.StartPoint, intersectSegment.EndPoint)
+                    {
+                        ColorIndex = 1
+                    };
+                    btr.AppendEntity(line);
+                    tr.AddNewlyCreatedDBObject(line, true);
+
+                    ed.WriteMessage("\n✅ Hai tam giác giao nhau! Đoạn giao đã được vẽ.");
+                    tr.Commit();
+                }
+            }
+            catch (System.Exception ex)
+            {
+                ed.WriteMessage($"\nLỗi: {ex.Message}");
+            }
+        }
+
+        [CommandMethod("Test_TriangulateGeoPolycurve")]
+        public void Test_TriangulateGeoPolycurve()
+        {
+            var doc = Application.DocumentManager.MdiActiveDocument;
+            var db = doc.Database;
+            var ed = doc.Editor;
+
+            var res = ed.GetEntity("\n👉 Chọn một Polyline3D kín để chia tam giác: ");
+            if (res.Status != PromptStatus.OK) return;
+
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                var obj = tr.GetObject(res.ObjectId, OpenMode.ForRead) as Polyline3d;
+                if (obj == null)
+                {
+                    ed.WriteMessage("\n❌ Không phải là Polyline3D.");
+                    return;
+                }
+
+                var poly = new GeoPolycurve(obj);
+                var triangles = poly.Triangulate(); // ✅ dùng phương thức instance
+
+                if (triangles.Count == 0)
+                {
+                    ed.WriteMessage("\n⚠️ Không thể chia tam giác.");
+                    return;
+                }
+
+                var btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
+
+                foreach (var tri in triangles)
+                {
+                    var entities = tri.Test(); // sử dụng hàm Test() của GeoTriangle
+                    foreach (var ent in entities)
+                    {
+                        btr.AppendEntity(ent);
+                        tr.AddNewlyCreatedDBObject(ent, true);
+                    }
+                }
+
+                ed.WriteMessage($"\n✅ Đã tạo {triangles.Count} tam giác.");
+                tr.Commit();
+            }
+        }
+
         #endregion
+
+
+
     }
 }
