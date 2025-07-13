@@ -43,7 +43,7 @@ public static class GeometryUtils
     /// <summary>
     /// Removes overlapping or duplicate GeoLine segments from a list of curves (GeoLine or GeoPolycurve).
     /// </summary>
-    public static List<GeoLine> OverKill(List<GeoCurves> input)
+    public static List<GeoCurves> OverKill(List<GeoCurves> input)
     {
         var allLines = new List<GeoLine>();
         foreach (var curve in input)
@@ -87,7 +87,7 @@ public static class GeometryUtils
                 groups.Add(new List<GeoLine> { line });
         }
 
-        var result = new List<GeoLine>();
+        var result = new List<GeoCurves>();
         foreach (var group in groups)
         {
             if (group.Count == 0) continue;
@@ -1159,6 +1159,84 @@ public sealed class GeoLine: GeoCurves
 
         return sb.ToString();
     }
+
+    /// <summary>
+    /// Offset line to left or right in XY plane.
+    /// </summary>
+    /// <param name="side">0 = left, 1 = right</param>
+    /// <param name="distance">Offset distance</param>
+    /// <returns>New offset GeoLine</returns>
+    /// <summary>
+    /// Offset line to left or right in XY plane.
+    /// </summary>
+    /// <param name="side">0 = left, 1 = right</param>
+    /// <param name="distance">Offset distance</param>
+    /// <returns>New offset GeoLine</returns>
+    public GeoLine Offset(int side, double distance)
+    {
+        Vector3d normal = NormalAtParameter(0.5); // Lấy pháp tuyến tại giữa đoạn thẳng
+
+        if (side == 1)
+            normal = -normal;
+
+        var offsetVec = normal * distance;
+        var newStart = StartPoint + offsetVec;
+        var newEnd = EndPoint + offsetVec;
+
+        return new GeoLine(newStart, newEnd);
+    }
+
+    /// <summary>
+    /// Finds intersection point between this GeoLine and another, treating both as infinite lines in XY.
+    /// If lines intersect, computes 3D point using slope of this line for Z.
+    /// Returns null if lines are parallel or do not intersect.
+    /// </summary>
+    /// <param name="other">Another GeoLine to intersect with</param>
+    /// <returns>Intersection Point3d or null</returns>
+    public Point3d? IntersectWithExtended(GeoLine other)
+    {
+        // Step 1: Project both lines to XY
+        Point2d A1 = new Point2d(StartPoint.X, StartPoint.Y);
+        Point2d B1 = new Point2d(EndPoint.X, EndPoint.Y);
+        Point2d A2 = new Point2d(other.StartPoint.X, other.StartPoint.Y);
+        Point2d B2 = new Point2d(other.EndPoint.X, other.EndPoint.Y);
+
+        Vector2d d1 = B1 - A1;
+        Vector2d d2 = B2 - A2;
+
+        double det = d1.X * d2.Y - d1.Y * d2.X;
+        if (Math.Abs(det) < 1e-9)
+            return null; // Parallel
+
+        Vector2d diff = A2 - A1;
+        double t = (diff.X * d2.Y - diff.Y * d2.X) / det;
+
+        double ix = A1.X + d1.X * t;
+        double iy = A1.Y + d1.Y * t;
+        Point2d intersect2D = new Point2d(ix, iy);
+
+        // Step 2: Compute Z using this line's slope
+        double z1Start = StartPoint.Z;
+        double z1End = EndPoint.Z;
+        double z2Start = other.StartPoint.Z;
+        double z2End = other.EndPoint.Z;
+
+        double len1 = A1.GetDistanceTo(B1);
+        double len2 = A2.GetDistanceTo(B2);
+
+        double d1Along = A1.GetDistanceTo(intersect2D);
+        double d2Along = A2.GetDistanceTo(intersect2D);
+
+        double ratio1 = len1 < 1e-9 ? 0 : d1Along / len1;
+        double ratio2 = len2 < 1e-9 ? 0 : d2Along / len2;
+
+        double z1 = z1Start + (z1End - z1Start) * ratio1;
+        double z2 = z2Start + (z2End - z2Start) * ratio2;
+
+        double z = (z1 + z2) / 2.0;
+        return new Point3d(intersect2D.X, intersect2D.Y, z);
+    }
+
     #endregion
 
 }
@@ -2085,6 +2163,44 @@ public sealed class GeoPolycurve: GeoCurves
         }
         return 0.5 * area;
     }
+
+    private static List<GeoLine> MergeCollinearLines(List<GeoLine> lines, bool isClosed, double tol = 1e-9)
+    {
+        var merged = new List<GeoLine>();
+        var cur = lines[0];
+
+        for (int i = 1; i < lines.Count; i++)
+        {
+            var next = lines[i];
+            var d1 = cur.Direction.GetNormal();
+            var d2 = next.Direction.GetNormal();
+
+            if (Math.Abs(Math.Abs(d1.DotProduct(d2)) - 1) < tol)
+                cur = new GeoLine(cur.StartPoint, next.EndPoint);
+            else
+            {
+                merged.Add(cur);
+                cur = next;
+            }
+        }
+        merged.Add(cur);
+
+        if (isClosed && merged.Count > 1)
+        {
+            var first = merged[0];
+            var last = merged[merged.Count - 1];
+            var d1 = last.Direction.GetNormal();
+            var d2 = first.Direction.GetNormal();
+
+            if (Math.Abs(Math.Abs(d1.DotProduct(d2)) - 1) < tol)
+            {
+                merged[merged.Count - 1] = new GeoLine(last.StartPoint, first.EndPoint);
+                merged.RemoveAt(0);
+            }
+        }
+
+        return merged;
+    }
     #endregion
 
     #region Override
@@ -2789,6 +2905,52 @@ public sealed class GeoPolycurve: GeoCurves
         return minDist;
     }
 
+    /// <summary>
+    /// Offsets a GeoPolycurve (composed of GeoLines) with optional miter limit.
+    /// </summary>
+    public static GeoPolycurve OffsetPolycurveAdvanced(GeoPolycurve geoPolycurve, int side, double distance, double miterLimit = 0)
+    {
+        var original = geoPolycurve?.Segments?.OfType<GeoLine>().ToList();
+        if (original == null || original.Count < 1)
+            throw new ArgumentException("GeoPolycurve không hợp lệ.");
+
+        if (original.Count != geoPolycurve.Segments.Count)
+            throw new NotSupportedException("Chỉ hỗ trợ các đoạn GeoLine.");
+
+        var lines = MergeCollinearLines(original, geoPolycurve.IsClosed);
+        var offset = lines.Select(l => l.Offset(side, distance)).ToList();
+
+        var verts = new List<Point3d>();
+        bool closed = geoPolycurve.IsClosed && lines.Count > 2;
+        int loopCount = closed ? lines.Count : lines.Count - 1;
+
+        if (!closed) verts.Add(offset[0].StartPoint);
+
+        for (int i = 0; i < loopCount; i++)
+        {
+            var cur = offset[i];
+            var next = offset[(i + 1) % offset.Count];
+            var inter = cur.IntersectWithExtended(next) ?? cur.EndPoint;
+
+            double miterLen = cur.EndPoint.DistanceTo(inter);
+            if (miterLen > distance * miterLimit)
+            {
+                verts.Add(cur.EndPoint);
+                verts.Add(next.StartPoint);
+            }
+            else
+            {
+                verts.Add(inter);
+            }
+        }
+
+        if (!closed) verts.Add(offset.Last().EndPoint);
+        else verts.Add(verts[0]); // đóng kín
+
+        return new GeoPolycurve(verts);
+    }
+
+
     #endregion
 }
 
@@ -2809,6 +2971,13 @@ public class GeoTriangle
     public Point3d P3 { get => _p3; }
 
     public Point3d[] Vertices => new[] { _p1, _p2, _p3 };
+
+    public IEnumerable<GeoLine> Edges =>
+    new[] {
+        new GeoLine(_p1, _p2),
+        new GeoLine(_p2, _p3),
+        new GeoLine(_p3, _p1)
+    };
 
     #endregion
 
@@ -2869,6 +3038,14 @@ public class GeoTriangle
     #endregion
 
     #region Methods
+
+    public string GetInfo()
+    {
+        return $"🔺 GeoTriangle:\n" +
+               $"- P1: {P1}\n" +
+               $"- P2: {P2}\n" +
+               $"- P3: {P3}\n";
+    }
 
     /// <summary>
     /// Computes the unit normal vector of the triangle (right-hand rule based on vertex order).
@@ -3214,7 +3391,7 @@ public class GeoTriangle
         return new GeoLine(p1, p2);
     }
 
-    public GeoLine GetIntersection(GeoTriangle other)
+    public GeoLine IntersectNonCoplanar(GeoTriangle other)
     {
         // Bước 1: Tìm đường giao tuyến giữa 2 mặt phẳng tam giác
         GeoLine intersectLine = this.GetIntersectionLineWith(other);
@@ -3234,12 +3411,105 @@ public class GeoTriangle
         // Bước 4: Tìm đoạn giao nhau giữa 2 đoạn con (overlap)
         var overlapResult = segment1.IntersectWith(segment2);
         if (overlapResult.Type == IntersectionResult.IntersectType.Overlap &&
-            overlapResult.OverlapSegments != null && overlapResult.OverlapSegments.Count > 0)
+            overlapResult.OverlapSegments != null &&
+            overlapResult.OverlapSegments.Count > 0)
         {
-            return overlapResult.OverlapSegments[0] as GeoLine;
+            var overlapLine = overlapResult.OverlapSegments[0] as GeoLine;
+
+            // ✅ Kiểm tra độ dài
+            if (overlapLine.Length <= Constants.DefaultTolerance)
+                return null;
+
+            return overlapLine;
         }
 
         return null;
+    }
+
+    public GeoCurves IntersectCoplanar(GeoTriangle other)
+    {
+        if (!this.IsCoplanarWith(other))
+            return null;
+
+        var segments = new List<GeoCurves>();
+
+        foreach (var edge in this.Edges)
+        {
+            var result = other.IntersectWith(edge);
+            if (result is GeoLine line)
+                segments.Add(line);
+        }
+
+        foreach (var edge in other.Edges)
+        {
+            var result = this.IntersectWith(edge);
+            if (result is GeoLine line)
+                segments.Add(line);
+        }
+
+        if (segments.Count == 0)
+            return null;
+
+        var longSegments = new List<GeoCurves>();
+        var shortPoints = new List<Point3d>();
+
+        foreach (var seg in segments)
+        {
+            if (seg.Length <= Constants.DefaultTolerance)
+            {
+                // Lọc trùng bằng GeometryUtils.Equals
+                if (!shortPoints.Any(p => GeometryUtils.Equals(p, seg.StartPoint)))
+                    shortPoints.Add(seg.StartPoint);
+            }
+            else
+            {
+                longSegments.Add(seg);
+            }
+        }
+
+        longSegments = GeometryUtils.OverKill(longSegments);
+
+        // ✅ Loại bỏ các đoạn quá ngắn sau khi OverKill
+        longSegments = longSegments
+            .Where(s => s.Length > Constants.DefaultTolerance)
+            .ToList();
+
+        // Trường hợp chỉ còn điểm duy nhất
+        if (longSegments.Count == 0 && shortPoints.Count == 1)
+        {
+            var pt = shortPoints[0];
+            return new GeoLine(pt, pt);
+        }
+
+        if (longSegments.Count == 1)
+        {
+            return longSegments[0];
+        }
+
+        var grouped = GeoPolycurve.ByGroupCurves(longSegments.Cast<GeoCurves>().ToList());
+
+        if (grouped.Count == 1)
+        {
+            return grouped[0];
+        }
+        else if (grouped.Count > 1)
+        {
+            return grouped.OrderByDescending(p => p.Length).First();
+        }
+
+        return null;
+    }
+
+    public GeoCurves IntersectWithTriangle(GeoTriangle other)
+    {
+        // --- Bước 1: Nếu đồng phẳng → xử lý bằng IntersectCoplanar ---
+        if (this.IsCoplanarWith(other))
+        {
+            return this.IntersectCoplanar(other);
+        }
+
+        // --- Bước 2: Không đồng phẳng → xử lý giao xuyên ---
+        return this.IntersectNonCoplanar(other);
     }
 
     public Entity[] Test()
@@ -3262,3 +3532,4 @@ public class GeoTriangle
 
     #endregion
 }
+

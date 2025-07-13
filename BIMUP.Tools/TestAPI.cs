@@ -684,6 +684,97 @@ namespace BIMUP.Core
             }
         }
 
+        [CommandMethod("Test_GeoLine_Offset")]
+        public void Test_GeoLine_Offset()
+        {
+            var doc = Application.DocumentManager.MdiActiveDocument;
+            var db = doc.Database;
+            var ed = doc.Editor;
+
+            // Bước 1: Chọn 1 LINE
+            var ids = SelectUtilities.SelectObjects("LINE", "\n👉 Chọn 1 LINE để test Offset:");
+            if (ids.Count == 0) return;
+
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                var line = tr.GetObject(ids[0], OpenMode.ForRead) as Line;
+                if (line == null) return;
+
+                var geo = new GeoLine(line);
+                var btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
+
+                // Bước 2: Cho người dùng pick 1 điểm
+                var resPick = ed.GetPoint("\n📌 Click 1 điểm để xác định hướng offset:");
+                if (resPick.Status != PromptStatus.OK) return;
+
+                var picked = resPick.Value;
+
+                // Bước 3: Tính vector từ điểm tới đoạn & xác định bên
+                var normal = geo.NormalAtParameter(0.5); // pháp tuyến
+                var toPicked = picked - geo.PointAtParameter(0.5);
+                int side = normal.DotProduct(toPicked) > 0 ? 0 : 1;
+
+                // Bước 4: Nhập khoảng cách
+                var resDist = ed.GetDistance("\n📏 Nhập khoảng cách offset:");
+                if (resDist.Status != PromptStatus.OK) return;
+                double distance = resDist.Value;
+
+                // Bước 5: Tạo GeoLine offset và vẽ
+                var offsetGeo = geo.Offset(side, distance);
+                foreach (var ent in offsetGeo.Test())
+                {
+                    ent.ColorIndex = 1; // Màu đỏ
+                    btr.AppendEntity(ent);
+                    tr.AddNewlyCreatedDBObject(ent, true);
+                }
+
+                tr.Commit();
+                ed.WriteMessage($"\n✅ Offset GeoLine theo hướng {(side == 0 ? "trái" : "phải")} {distance} thành công.");
+            }
+        }
+
+        [CommandMethod("Test_GeoLine_IntersectWithExtended")]
+        public void Test_GeoLine_IntersectWithExtended()
+        {
+            var doc = Application.DocumentManager.MdiActiveDocument;
+            var db = doc.Database;
+            var ed = doc.Editor;
+
+            // Bước 1: Chọn 2 LINE
+            var ids = SelectUtilities.SelectObjects("LINE", "\n👉 Chọn 2 LINE để test giao mở rộng:");
+            if (ids.Count < 2) return;
+
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                var line1 = tr.GetObject(ids[0], OpenMode.ForRead) as Line;
+                var line2 = tr.GetObject(ids[1], OpenMode.ForRead) as Line;
+                if (line1 == null || line2 == null) return;
+
+                var geo1 = new GeoLine(line1);
+                var geo2 = new GeoLine(line2);
+
+                var pt = geo1.IntersectWithExtended(geo2);
+                if (pt == null)
+                {
+                    ed.WriteMessage("\n❌ Không tìm thấy giao điểm (hoặc song song).");
+                    return;
+                }
+
+                var btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
+
+                // Bước 2: Vẽ circle tại điểm giao
+                var circle = new Circle(pt.Value, Vector3d.ZAxis, 1.0)
+                {
+                    ColorIndex = 3 // Xanh lá
+                };
+                btr.AppendEntity(circle);
+                tr.AddNewlyCreatedDBObject(circle, true);
+
+                tr.Commit();
+                ed.WriteMessage($"\n✅ Đã vẽ vòng tròn tại giao điểm mở rộng: {pt.Value}");
+            }
+        }
+
         #endregion
 
         #region GeoArc
@@ -1437,6 +1528,55 @@ namespace BIMUP.Core
             }
         }
 
+        [CommandMethod("Test_OffsetPolycurveAdvanced")]
+        public void Test_OffsetPolycurveAdvanced()
+        {
+            var doc = Application.DocumentManager.MdiActiveDocument;
+            var db = doc.Database;
+            var ed = doc.Editor;
+
+            // 1. Chọn Polyline3d
+            var ids = SelectUtilities.SelectObjects("POLYLINE", "\n👉 Chọn 1 Polyline3d để Offset:");
+            if (ids.Count == 0) return;
+
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                var pline = tr.GetObject(ids[0], OpenMode.ForRead) as Polyline3d;
+                if (pline == null) return;
+
+                // 2. Nhập thông số
+                PromptIntegerOptions sideOpt = new PromptIntegerOptions("\n👉 Chọn hướng offset [0 = Trái | 1 = Phải]:");
+                sideOpt.AllowNone = false;
+                sideOpt.AllowZero = true;
+                sideOpt.AllowNegative = false;
+                var sideRes = ed.GetInteger(sideOpt);
+                if (sideRes.Status != PromptStatus.OK) return;
+                int side = sideRes.Value;
+
+                var distRes = ed.GetDouble("\n📏 Nhập khoảng cách offset:");
+                if (distRes.Status != PromptStatus.OK) return;
+                double distance = distRes.Value;
+
+                // 3. Khởi tạo GeoPolycurve
+                var geo = new GeoPolycurve(pline);
+
+                // 4. Offset nâng cao
+                var offset = GeoPolycurve.OffsetPolycurveAdvanced(geo, side, distance);
+
+                // 5. Vẽ kết quả
+                var btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
+                var ents = offset.Test(); // tạo Polyline3d
+                foreach (var ent in ents)
+                {
+                    ent.ColorIndex = 1; // đỏ
+                    btr.AppendEntity(ent);
+                    tr.AddNewlyCreatedDBObject(ent, true);
+                }
+
+                ed.WriteMessage("\n✅ Đã offset và tạo GeoPolycurve mới.");
+                tr.Commit();
+            }
+        }
 
         #endregion
 
@@ -1767,7 +1907,7 @@ namespace BIMUP.Core
                     }
 
                     // Gọi hàm kiểm tra giao nhau
-                    var intersectSegment = tri1.GetIntersection(tri2);
+                    var intersectSegment = tri1.IntersectNonCoplanar(tri2);
 
                     if (intersectSegment == null)
                     {
@@ -1839,9 +1979,163 @@ namespace BIMUP.Core
             }
         }
 
+        [CommandMethod("Test_GeoTriangle_IntersectCoplanar")]
+        public void Test_GeoTriangle_IntersectCoplanar()
+        {
+            var doc = Application.DocumentManager.MdiActiveDocument;
+            var db = doc.Database;
+            var ed = doc.Editor;
+
+            try
+            {
+                // B1: Chọn tam giác đầu tiên
+                var res1 = ed.GetEntity("\n👉 Chọn tam giác đầu tiên (Polyline3D có 3 đỉnh): ");
+                if (res1.Status != PromptStatus.OK) return;
+
+                // B2: Chọn tam giác thứ hai
+                var res2 = ed.GetEntity("\n👉 Chọn tam giác thứ hai (Polyline3D có 3 đỉnh): ");
+                if (res2.Status != PromptStatus.OK) return;
+
+                using (var tr = db.TransactionManager.StartTransaction())
+                {
+                    var obj1 = tr.GetObject(res1.ObjectId, OpenMode.ForRead) as Polyline3d;
+                    var obj2 = tr.GetObject(res2.ObjectId, OpenMode.ForRead) as Polyline3d;
+
+                    var tri1 = GeoTriangle.FromPolyline3d(obj1);
+                    var tri2 = GeoTriangle.FromPolyline3d(obj2);
+
+                    if (tri1 == null || tri2 == null)
+                    {
+                        ed.WriteMessage("\n❌ Một trong hai polyline không hợp lệ hoặc không có đúng 3 đỉnh.");
+                        return;
+                    }
+
+                    // B3: Gọi hàm kiểm tra giao nhau đồng phẳng
+                    var result = tri1.IntersectCoplanar(tri2);
+                    if (result == null)
+                    {
+                        ed.WriteMessage("\n❌ Không có vùng giao đồng phẳng giữa hai tam giác.");
+                        return;
+                    }
+
+                    // B4: Vẽ kết quả
+                    var btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
+                    foreach (var ent in result.Test())
+                    {
+                        btr.AppendEntity(ent);
+                        tr.AddNewlyCreatedDBObject(ent, true);
+                    }
+
+                    ed.WriteMessage("\n✅ Giao nhau đã được vẽ thành công.");
+                    tr.Commit();
+                }
+            }
+            catch (System.Exception ex)
+            {
+                ed.WriteMessage($"\nLỗi: {ex.Message}");
+            }
+        }
+
+        [CommandMethod("Test_GeoTriangle_Info")]
+        public void Test_GeoTriangle_Info()
+        {
+            var doc = Application.DocumentManager.MdiActiveDocument;
+            var ed = doc.Editor;
+            var db = doc.Database;
+
+            try
+            {
+                // Chọn Polyline3D
+                var res = ed.GetEntity("\n👉 Chọn tam giác (Polyline3D có đúng 3 đỉnh): ");
+                if (res.Status != PromptStatus.OK) return;
+
+                using (var tr = db.TransactionManager.StartTransaction())
+                {
+                    var obj = tr.GetObject(res.ObjectId, OpenMode.ForRead) as Polyline3d;
+                    if (obj == null)
+                    {
+                        ed.WriteMessage("\n❌ Đối tượng không phải Polyline3D.");
+                        return;
+                    }
+
+                    var triangle = GeoTriangle.FromPolyline3d(obj);
+                    if (triangle == null)
+                    {
+                        ed.WriteMessage("\n❌ Polyline3D không có đúng 3 đỉnh.");
+                        return;
+                    }
+
+                    // In thông tin tam giác
+                    ed.WriteMessage(triangle.GetInfo());
+                    tr.Commit();
+                }
+            }
+            catch (System.Exception ex)
+            {
+                ed.WriteMessage($"\nLỗi: {ex.Message}");
+            }
+        }
+
+        [CommandMethod("Test_GeoTriangle_Intersection")]
+        public void Test_GeoTriangle_Intersection()
+        {
+            var doc = Application.DocumentManager.MdiActiveDocument;
+            var db = doc.Database;
+            var ed = doc.Editor;
+
+            try
+            {
+                // B1: Chọn tam giác đầu tiên
+                var res1 = ed.GetEntity("\n👉 Chọn tam giác đầu tiên (Polyline3D có 3 đỉnh): ");
+                if (res1.Status != PromptStatus.OK) return;
+
+                // B2: Chọn tam giác thứ hai
+                var res2 = ed.GetEntity("\n👉 Chọn tam giác thứ hai (Polyline3D có 3 đỉnh): ");
+                if (res2.Status != PromptStatus.OK) return;
+
+                using (var tr = db.TransactionManager.StartTransaction())
+                {
+                    var obj1 = tr.GetObject(res1.ObjectId, OpenMode.ForRead) as Polyline3d;
+                    var obj2 = tr.GetObject(res2.ObjectId, OpenMode.ForRead) as Polyline3d;
+
+                    var tri1 = GeoTriangle.FromPolyline3d(obj1);
+                    var tri2 = GeoTriangle.FromPolyline3d(obj2);
+
+                    if (tri1 == null || tri2 == null)
+                    {
+                        ed.WriteMessage("\n❌ Một trong hai polyline không hợp lệ hoặc không có đúng 3 đỉnh.");
+                        return;
+                    }
+
+                    // B3: Gọi hàm giao bất kỳ (cả đồng phẳng + xuyên)
+                    var result = tri1.IntersectWithTriangle(tri2);
+                    if (result == null)
+                    {
+                        ed.WriteMessage("\n❌ Hai tam giác không giao nhau.");
+                        return;
+                    }
+
+                    // B4: Vẽ kết quả
+                    var btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
+                    foreach (var ent in result.Test())
+                    {
+                        btr.AppendEntity(ent);
+                        tr.AddNewlyCreatedDBObject(ent, true);
+                    }
+
+                    ed.WriteMessage("\n✅ Đã vẽ kết quả giao nhau thành công.");
+                    tr.Commit();
+                }
+            }
+            catch (System.Exception ex)
+            {
+                ed.WriteMessage($"\nLỗi: {ex.Message}");
+            }
+        }
+
+
+
         #endregion
-
-
 
     }
 }
